@@ -1,0 +1,325 @@
+---
+subtitle: "Water loss"
+author: "Jacinta Kong"
+editor_options: 
+  chunk_output_type: console
+---
+# Introduction
+```{r}
+#| include: false
+source("setup.R")
+library(lme4)
+library(lmerTest)
+load("data/Desiccation 2025/ions.Rdata")
+load("data/Desiccation 2025/volume.Rdata")
+load("data/Desiccation 2025/tissue.Rdata")
+load("data/Desiccation 2025/guts.Rdata")
+```
+
+# Merge data
+
+Total of 713 crickets across all experiments. Removed control crickets.
+
+580 crickets (non-control): 273 Females and 270 Males
+
+```{r}
+volume_data <- samples %>% select(Cricket_ID, Sex, Time, Percent_change, Total_water_content, Relative_water_loss, Mass_change_rate) %>% 
+  mutate(Experiment = "Haem_vol")
+
+ion_data <- drying_data %>% distinct(Cricket_ID, .keep_all = TRUE) %>% 
+  select(Cricket_ID, Sex, Time, Percent_change, Total_water_content, Relative_water_loss, Mass_change_rate) %>% 
+  mutate(Experiment = "Ions")
+
+tissue_data <- tissue_data %>% select(Cricket_ID, Sex, Time, Percent_change, Total_water_content, Relative_water_loss, Mass_change_rate) %>% 
+  mutate(Experiment = "Tissues")
+
+gg_data <- gg_data %>% select(Cricket_ID, Sex, Time, Percent_change, Total_water_content, Relative_water_loss, Mass_change_rate) %>% 
+  mutate(Experiment = "GutsGonads")
+
+
+water_data <- rbind(volume_data, ion_data, tissue_data, gg_data) %>% 
+  filter(Time != 0) %>% 
+  mutate(Desiccation_time = ifelse(Time == 24, 18, Time),
+         Cricket_ID = paste(Cricket_ID, Experiment, sep = "_"),
+         WLR = Relative_water_loss / Desiccation_time)
+
+water_data %>% 
+  group_by(Sex) %>% 
+  summarise(mean = mean(Total_water_content),
+          n = n(),
+          sd = sd(Total_water_content),
+          se = sd/sqrt(n))
+```
+
+# Percent change in wet mass
+
+ * No interaction between time and sex - additive model.
+ * log transformed model is better fitting than the linear model
+ * Variance estimate of Experiment (random effect) is close to 0 but significant on the linear model. Cannot test on the exponential model.
+ * Analyse Time as continuous variable because it is log transformed.
+ * Fit model on fixed effects only
+
+```{r}
+PC_mod <- water_data %>% 
+  lmer(log(Percent_change) ~ log(Desiccation_time) + Sex + (1|Experiment), ., REML = FALSE) 
+
+summary(PC_mod)
+
+PC_mod_linear <- water_data %>% 
+  lmer(Percent_change ~ Desiccation_time + Sex + (1|Experiment), ., REML = FALSE) 
+
+AIC <- AIC(PC_mod, PC_mod_linear)
+AIC[2,2]/AIC[1,2] # 5 fold difference in AIC, weights is 100%
+ranova(PC_mod_linear)
+
+PC_fit <-  tibble(Desiccation_time = rep(seq(3, 18, length.out = 10), 2),                                                                        Sex = c(rep("Female", 10), rep("Male", 10))) %>% 
+  mutate(fit = exp(predict(PC_mod, newdata = ., re.form = NA)))
+```
+
+```{r}
+mean_pc_loss <- water_data %>% 
+  group_by(Sex, Desiccation_time) %>% 
+  summarise(mean_pc = mean(Percent_change),
+            se_pc = sd(Percent_change) / sqrt(n()),
+            range = max(Percent_change) - min(Percent_change),
+            n = n()) 
+
+p_wetmass <- ggplot() +
+  geom_point(data = water_data, aes(Desiccation_time, Percent_change, colour = Sex), alpha = 0.6, stroke = NA,
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5)) +
+  geom_point(data = mean_pc_loss, aes(Desiccation_time, mean_pc, colour = Sex), 
+             size = 2, shape = 1,
+             position = position_dodge(0), show.legend = FALSE) +
+  geom_errorbar(data = mean_pc_loss, aes(Desiccation_time, colour = Sex,
+                                         ymin = mean_pc - se_pc,
+                                         ymax = mean_pc + se_pc),
+                width = 1, linewidth = 0.5,
+                position = position_dodge(0)) +
+  geom_line(data = PC_fit, aes(Desiccation_time, fit, colour = Sex), linewidth = 0.5) +
+  labs(y = "Wet mass lost (%)",
+       x = "Desiccation time (h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_continuous(limits = c(0, 30), breaks = seq(0, 35, 5), expand = expansion(mult = c(0, 0))) +
+  scale_x_continuous(breaks = c(0, 3, 6, 18)) 
+
+p_wetmass
+
+ggsave(p_wetmass, 
+       dpi = 300, width = single_width, 
+       units = "mm", height = single_width, 
+       filename = "data/Desiccation 2025/figures/wetmass_plot.png")
+```
+
+***
+
+# Water loss
+
+ * No interaction
+ 
+```{r}
+WL_mod <- water_data %>% 
+  lmer(log(Relative_water_loss) ~ log(Desiccation_time) + Sex + (1|Experiment), ., REML = FALSE) 
+
+summary(WL_mod)
+
+WL_mod_linear <- water_data %>% 
+  lmer(Relative_water_loss ~ Desiccation_time + Sex + (1|Experiment), ., REML = FALSE) 
+anova(WL_mod, WL_mod_linear)
+
+WL_fit <- tibble(Desiccation_time = rep(seq(3, 18, length.out = 10), 2),
+                  Sex = c(rep("Female", 10), rep("Male", 10))) %>% 
+  mutate(fit = exp(predict(WL_mod, newdata = ., re.form = NA)))
+```
+
+
+```{r}
+mean_water_loss <- water_data %>% 
+  group_by(Sex, Desiccation_time) %>% 
+  summarise(mean_wl = mean(Relative_water_loss),
+            se_pc = sd(Relative_water_loss) / sqrt(n()),
+            range = max(Relative_water_loss) - min(Relative_water_loss),
+            n = n()) 
+
+p_water_loss <- ggplot() +
+  geom_point(data = water_data, aes(Desiccation_time, Relative_water_loss, colour = Sex), alpha = 0.6, stroke = NA,
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5)) +  
+  geom_point(data = mean_water_loss, aes(Desiccation_time, mean_wl, colour = Sex), 
+             size = 2, shape = 1,
+             position = position_dodge(0), show.legend = FALSE) +  
+  geom_errorbar(data = mean_water_loss, aes(Desiccation_time, colour = Sex,
+                                            ymin = mean_wl - se_pc,
+                                            ymax = mean_wl + se_pc),
+                width = 1, linewidth = 0.5,
+                position = position_dodge(0)) +
+  geom_line(data = WL_fit, aes(Desiccation_time, fit, colour = Sex), linewidth = 0.5) +
+  labs(y = "Body water lost (%)",
+       x = "Desiccation time (h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_continuous(limits = c(0, 40), breaks = seq(0, 50, 10), expand = expansion(mult = c(0.0, 0))) +
+  scale_x_continuous(breaks = c(0, 3, 6, 18)) 
+
+p_water_loss
+
+ggsave(p_water_loss, 
+       dpi = 300, width = 160, 
+       units = "mm", height = 150, 
+       filename = "data/Desiccation 2025/figures/relativeWL_plot.png")
+```
+
+***
+
+# Water loss rate
+
+* No interaction
+
+```{r}
+WLR_mod <- water_data %>% 
+  lmer(log(WLR) ~ log(Desiccation_time) + Sex + (1|Experiment), ., REML = FALSE) 
+
+summary(WLR_mod)
+
+WLR_mod_linear <- water_data %>% 
+  lmer(WLR ~ Desiccation_time + Sex + (1|Experiment), ., REML = FALSE) 
+anova(WLR_mod, WLR_mod_linear)
+
+WLR_fit <- tibble(Desiccation_time = rep(seq(3, 18, length.out = 10), 2),
+                  Sex = c(rep("Female", 10), rep("Male", 10))) %>% 
+  mutate(fit = exp(predict(WLR_mod, newdata = ., re.form = NA)))
+```
+
+```{r}
+# Water loss rate (relative water content)
+mean_WLR <- water_data %>% 
+  group_by(Sex, Desiccation_time) %>%
+  summarise(mean_WLR = mean(WLR),
+            se_WLR = sd(WLR) / sqrt(n()),
+            range = max(WLR) - min(WLR),
+            n = n())
+
+knitr::kable(mean_WLR, digits = 3)
+
+p_WLR <- ggplot() +
+  geom_point(data = water_data, aes(Desiccation_time, WLR, colour = Sex), alpha = 0.6, stroke = NA,
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5)) +
+  geom_point(data = mean_WLR, aes(Desiccation_time, mean_WLR, colour = Sex), 
+             size = 2, shape = 1,
+             position = position_dodge(0), show.legend = FALSE) +
+  geom_errorbar(data = mean_WLR, aes(Desiccation_time, colour = Sex,
+                                     ymin = mean_WLR - se_WLR, 
+                                     ymax = mean_WLR + se_WLR), 
+                width = 1, linewidth = 0.5,
+                position = position_dodge(0)) +
+  geom_line(data = WLR_fit, aes(Desiccation_time, fit, colour = Sex), linewidth = 0.5) +
+  labs(y = expression("Water loss rate\n(% water content"%.%"h"^-1~")"),
+       x = "Desiccation time (h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_continuous(limits = c(0, 4), breaks = seq(0, 5, 0.5), expand = expansion(mult = c(0.0, 0))) +
+  scale_x_continuous(breaks = c(3, 6, 18)) +
+  theme(axis.title.y = element_text(hjust = 0.5), plot.margin = margin(t = 6, r = 5.5, b = 5.5, l = 20, unit = "pt"))
+
+p_WLR
+
+ggsave(p_WLR, 
+       dpi = 300, width = single_width, 
+       units = "mm", height = single_width, 
+       filename = "data/Desiccation 2025/figures/WLR_plot.png")
+```
+
+# Survival 
+
+Use ion data only because there was more mortality.
+
+```{r}
+filter(mass_data, Time != 0) %>% 
+  group_by(Survival) %>% 
+  summarise(n = n())
+
+surv_mod <- glm(Survival ~ Relative_water_loss, filter(mass_data, Time != 0), family = "binomial")
+surv_fit <- data.frame(Relative_water_loss = seq(0, max(mass_data$Relative_water_loss, na.rm = TRUE)), Survival = predict(surv_mod, newdata = data.frame(Relative_water_loss = seq(0, max(mass_data$Relative_water_loss, na.rm = TRUE))), type = "response"))
+
+log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2]
+
+ggplot(filter(mass_data, Time != 0), aes(Relative_water_loss, Survival)) +
+  geom_point() +
+  geom_line(data = surv_fit, aes(Relative_water_loss, Survival)) +
+  annotate(x = log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2],
+           y = 0, yend = 0.5, geom = "segment", linetype = 2) +
+  annotate(xend = log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2],
+           x = 0, y = 0.5, geom = "segment", linetype = 2) +
+  scale_x_continuous(limits = c(0, 80), expand = c(0, 0)) +
+  labs(y = "Probability of survival",
+       x = "Relative water loss (%)")
+```
+
+***
+
+# Recovery
+
+118 crickets: 58 females and 60 males
+
+```{r}
+all_rehydration <- bind_rows(rehydration_ions, rehydration_volume, rehydration_tissue, rehydration_guts)
+
+all_rehydration$Cricket_ID = paste(all_rehydration$Cricket_ID, all_rehydration$Experiment, sep = "_")
+
+rehydration_plot <- ggplot(all_rehydration, aes(Timepoint, Change, group = Cricket_ID, colour = Time_treatment, alpha = Time_treatment)) +
+  geom_hline(yintercept = 100, linetype = 2) +
+  geom_line(linewidth = 0.5) +
+  theme(legend.position = "right") +
+  ylab("Relative mass change (%)") +
+  scale_y_continuous(breaks = seq(0, 120, 5), limits = c(70, 120), expand = c(0, 0)) +
+  scale_x_discrete(name = "Time point", labels = c("Pre-desiccation", "Post-desiccation", "Post-recovery")) +
+  facet_grid(~Sex) +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_alpha_manual(name = "Feeding state", values = c(1, 0.3), label = c("Fed", "Starved")) +
+  scale_color_manual(name = "Feeding state", values = c("#298c8c", "#f1a226"), label = c("Fed", "Starved"))
+
+rehydration_plot
+
+all_rehydration %>% 
+  group_by(Timepoint) %>% 
+  summarise(mean = mean(Change),
+            n = n(),
+            se = sd(Change)/sqrt(n))
+
+ggsave(rehydration_plot, 
+       dpi = 300, width = double_width, 
+       units = "mm", height = double_height, 
+       filename = "data/Desiccation 2025/figures/rehydration.png")
+```
+
+## Recovery stats
+
+```{r}
+rm_mod <- aov(Change ~  Timepoint + Error(Cricket_ID), all_rehydration)
+summary(rm_mod)
+emmeans::emmeans(rm_mod,  specs = ~ Timepoint) %>%  pairs()
+
+rm_mod <- lme4::lmer(Change ~ Timepoint + (1|Cricket_ID) + (1|Experiment), all_rehydration, REML = FALSE)
+library(lmerTest)
+summary(rm_mod)
+anova(rm_mod)
+emmeans::emmeans(rm_mod,  list(pairwise ~ Timepoint), adjust = "tukey")
+```
+
+# Publication figure
+```{r}
+Fig1 <- p_wetmass + p_water_loss +
+  plot_layout(axis_titles = "collect" , guides = "collect") &
+  plot_annotation(tag_levels = 'A') 
+
+Fig1_alt <- p_wetmass + p_WLR +
+  plot_layout(axis_titles = "collect" , guides = "collect") &
+  plot_annotation(tag_levels = 'A')  
+
+Fig1
+ggsave(Fig1, 
+       dpi = 300, width = double_width, 
+       units = "mm", height = single_height, 
+       filename = "data/Desiccation 2025/figures/Fig1WLR.png")
+```
+

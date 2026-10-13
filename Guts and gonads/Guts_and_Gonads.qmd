@@ -1,0 +1,807 @@
+---
+subtitle: "Guts and gonads"
+editor_options: 
+  chunk_output_type: console
+---
+
+# Aim
+
+To portion out tissue water content into gut and gonad water content and determine if crickets are storing water in their gut lumen.
+
+
+# Setup
+```{r}
+#| include: false
+source("setup.R")
+```
+
+
+# Load data
+
+Calculate:
+
+* Staring mass
+* Transfer mass
+* Whole animal wet mass (end mass)
+* Wet carcass mass
+* Wet gut mass
+* Wet gonad mass
+* Dry carcass mass
+* Dry gut mass
+* Dry gonad mass
+
+```{r}
+gg_data <- read_excel("data/Desiccation 2025/guts and gonads/GutsAndGonads_massdata.xlsx") %>% 
+  mutate(Whole_animal_wet_mass = wet_whole_body - carcass_tube,
+         Start_mass = case_when(Time_treatment == 0 ~ Whole_animal_wet_mass,
+                              .default = start_cricket - start_container),
+         Rehydrated_transfer_mass = ifelse(Time == 24, transfer_cricket - transfer_container, NA),
+         wet_carcass_mass  = wet_carcass - carcass_tube,
+         wet_gut_mass = wet_gut - gut_tube,
+         wet_gonad_mass = wet_gonad - gonad_tube,
+         dry_carcass_mass  = dry_carcass - carcass_tube,
+         dry_gut_mass = dry_gut - gut_tube,
+         dry_gonad_mass = dry_gonad - gonad_tube,
+         total_dry_mass = dry_carcass_mass + dry_gut_mass + dry_gonad_mass,
+         Percent_change = case_when(Time == 0 ~ NA,
+                                    Time == 24 ~ 100 - (Rehydrated_transfer_mass / Start_mass) * 100,
+                              .default = 100 - (Whole_animal_wet_mass / Start_mass) * 100),
+         Desiccation_time = ifelse(Time == 24, 18, Time),
+         Total_water_content = ((Start_mass - total_dry_mass) / Start_mass) * 100,
+         # Water lost during desiccation (%)
+         Relative_water_loss = (Percent_change /  Total_water_content) * 100,
+         # Calculate water loss rates
+         Mass_change_rate = ifelse(Time == 0, NA, Percent_change / Desiccation_time)) # %/h)
+  
+# Calculate water content
+gg_data <- gg_data %>% 
+  mutate(
+    # Total amount of water in body
+    Body_water = Start_mass - total_dry_mass,
+    # Water lost during desiccation
+    Lost_water = Start_mass - Whole_animal_wet_mass,
+    # Water in all tissues post-desiccation
+    Tissue_water = Whole_animal_wet_mass - total_dry_mass,
+    carcass_water = wet_carcass_mass - dry_carcass_mass,
+    gut_water = wet_gut_mass - dry_gut_mass,
+    gonad_water = wet_gonad_mass - dry_gonad_mass,
+    haem_water = Tissue_water - carcass_water - gut_water - gonad_water)
+
+# Calculate proportion relative to total amount of body water
+gg_data <- gg_data %>% 
+  mutate(
+    # Water lost during desiccation
+    Desiccation_water_prop = -((Lost_water / Body_water) * 100),
+    # Water in tissue post-desiccation
+    Tissue_prop =  ((Tissue_water / Body_water) * 100),
+    carcass_water_prop = (carcass_water / Body_water) * 100,
+    gut_water_prop = (gut_water / Body_water) * 100,
+    gonad_water_prop = (gonad_water / Body_water) * 100,
+    haem_water_prop = (haem_water / Body_water) * 100)
+
+# Remove 182 outlier constipated male
+gg_data <- filter(gg_data, Cricket_ID != 182)
+
+# Removed starved control group
+gg_data <- filter(gg_data, Time_treatment != "0_starved")
+```
+
+```{r}
+# Standardise changes relative to controls
+baseline <- gg_data %>% 
+  group_by(Sex) %>% 
+  filter(Time == 0) %>% 
+  summarise(mean_tissue = mean(Tissue_prop),
+            mean_carcass = mean(carcass_water_prop),
+            mean_gut = mean(gut_water_prop),
+            mean_gonad = mean(gonad_water_prop),
+            mean_haem = mean(haem_water_prop)) %>% 
+  data.frame(row.names  = c("F", "M"))
+
+gg_data <- gg_data %>% 
+  mutate(diff_tissue = ifelse(Sex == "Female", Tissue_prop - baseline["F",2],
+                             Tissue_prop - baseline["M",2]),
+         diff_carcass = ifelse(Sex == "Female", carcass_water_prop - baseline["F","mean_carcass"], carcass_water_prop - baseline["M","mean_carcass"]),
+         diff_gut = ifelse(Sex == "Female", gut_water_prop - baseline["F","mean_gut"], gut_water_prop - baseline["M","mean_gut"]),
+         diff_gonad = ifelse(Sex == "Female", gonad_water_prop - baseline["F","mean_gonad"], gonad_water_prop - baseline["M","mean_gonad"]),
+         diff_haem = ifelse(Sex == "Female", haem_water_prop - baseline["F","mean_haem"],
+                             haem_water_prop - baseline["M","mean_haem"]))
+```
+
+Derive:
+
+* Water content (mg)
+* Total water content (mg); sum of all water content
+* Haemolymph content (mg); remaining water
+
+
+```{r}
+rehydration_guts <- gg_data %>% 
+  filter(Time == 24) %>% 
+  mutate(Percent_change = 100 - (Rehydrated_transfer_mass / Start_mass) * 100,
+         Percent_change_recovery = (Whole_animal_wet_mass / Start_mass) * 100) %>% 
+  select(Cricket_ID, Sex, Time_treatment, Percent_change, Percent_change_recovery) %>% 
+  mutate(Start_Percent = 100,
+         Percent_change = 100 - Percent_change) %>% 
+  pivot_longer(contains("Percent"), names_to = "Timepoint", values_to = "Change") %>% 
+  mutate(Experiment = "Guts",
+    Timepoint = factor(Timepoint, levels = c("Start_Percent", "Percent_change", "Percent_change_recovery"))) 
+
+save(gg_data, rehydration_guts, file = "data/Desiccation 2025/guts.Rdata")
+```
+
+```{r}
+Percent_change_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(Percent_change),
+            se = sd(Percent_change) / sqrt(n()),
+            cv = (sd(Percent_change) / mean) * 100)
+knitr::kable(Percent_change_mean, digits = 3)
+
+ggplot() +
+  geom_point(data = gg_data, aes(Time, Percent_change, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_line(data = Percent_change_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = Percent_change_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = Percent_change_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Wet mass lost (%)", limits = c(0, 30), expand = c(0,0), breaks = seq(0, 150, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+```
+
+# Relative difference in body water
+
+```{r}
+diff_water <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(.groups = "drop",
+            n = n(),
+            # Tissue
+            mean_tissue = mean(diff_tissue),
+            se_tissue = sd(diff_tissue) / sqrt(n()),
+            # Gut 
+            mean_gut = mean(diff_gut),
+            se_gut = sd(diff_gut) / sqrt(n()),
+            # Gonad
+            mean_gonad = mean(diff_gonad),
+            se_gonad = sd(diff_gonad) / sqrt(n()),
+            # carcass
+            mean_carcass = mean(diff_carcass),
+            se_carcass = sd(diff_carcass) / sqrt(n()),
+            # Haem
+            mean_haem = mean(diff_haem),
+            se_haem = sd(diff_haem) / sqrt(n()),
+            # Total loss
+            mean_loss = mean(Desiccation_water_prop),
+            se_loss =  sd(Desiccation_water_prop) / sqrt(n()))
+
+diff_pal <- viridis::viridis(4, begin = 0.75, end = 0, option = "C")
+diff_pal2 <- viridis::viridis(3, begin = 0.8, end = 0, option = "D")
+
+p_diff_tissues <- ggplot(gg_data, aes(x = Time)) + 
+  geom_hline(yintercept = 0, linetype = 3, colour = "grey30") +
+  # gut
+  # geom_point(aes(y = diff_gut, colour = "Gut"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  geom_line(aes(y = mean_gut, colour = "Gut"), data = diff_water, linewidth = 0.5) +
+  geom_point(aes(y = mean_gut, colour = "Gut"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = diff_water, aes(ymin = mean_gut - se_gut, ymax = mean_gut + se_gut, colour = "Gut"), width = 1, linewidth = 0.5) +
+  # gonad
+  # geom_point(aes(y = diff_gonad, colour = "Gonad"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  geom_line(aes(y = mean_gonad, colour = "Gonad"), data = diff_water, linewidth = 0.5) +
+  geom_point(aes(y = mean_gonad, colour = "Gonad"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = diff_water, aes(ymin = mean_gonad - se_gonad, ymax = mean_gonad + se_gonad, colour = "Gonad"), width = 1, linewidth = 0.5) +
+  # carcass
+  # geom_point(aes(y = diff_carcass, colour = "Carcass"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  geom_line(aes(y = mean_carcass, colour = "Carcass"), data = diff_water, linewidth = 0.5) +
+  geom_point(aes(y = mean_carcass, colour = "Carcass"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = diff_water, aes(ymin = mean_carcass - se_carcass, ymax = mean_carcass + se_carcass, colour = "Carcass"), width = 1, linewidth = 0.5) +
+  # total
+  # geom_point(aes(y = Desiccation_water_prop, colour = "Total loss"), position = position_jitter(height = 0, width = 0.1), alpha = 0.3, stroke = NA, show.legend = FALSE) +
+  geom_line(aes(y = mean_loss, colour = "Total loss"), data = diff_water, linewidth = 0.5, alpha = 0.3, show.legend = FALSE) +
+  geom_point(aes(y = mean_loss, colour = "Total loss"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = diff_water, aes(ymin = mean_loss - se_loss, ymax = mean_loss + se_loss, colour = "Total loss"), width = 1, linewidth = 0.5, alpha = 0.3, show.legend = FALSE) +
+  # haem
+  # geom_point(aes(y = diff_haem, colour = "Haemolymph"), position = position_jitter(height = 0, width = 0.1), alpha = 0.3, stroke = NA, show.legend = FALSE) +
+  geom_line(aes(y = mean_haem, colour = "Haemolymph"), data = diff_water, linewidth = 0.5, alpha = 0.3, show.legend = FALSE) +
+  geom_point(aes(y = mean_haem, colour = "Haemolymph"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = diff_water, aes(ymin = mean_haem - se_haem, ymax = mean_haem + se_haem, colour = "Haemolymph"), width = 1, linewidth = 0.5, alpha = 0.3, show.legend = FALSE) +
+  # # tissue
+  # geom_point(aes(y = diff_tissue, colour = "tissue"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  # geom_line(aes(y = mean_tissue, colour = "tissue"), data = diff_water, linewidth = 0.5) +
+  # geom_point(aes(y = mean_tissue, colour = "tissue"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  # geom_errorbar(data = diff_water, aes(ymin = mean_tissue - se_tissue, ymax = mean_tissue + se_tissue, colour = "tissue"), width = 1, linewidth = 0.5) +
+  scale_colour_manual(name = "Tissue", values = c("Gut" = diff_pal[3], "Gonad" = diff_pal[2], "Carcass" = diff_pal[1], "Total loss" = diff_pal2[1],"Haemolymph" = diff_pal2[2]), labels = c("Carcass", "Gonad", "Gut", "","")) +
+  scale_y_continuous(name = "Body water lost (%)", limits = c(-20, 5), expand = c(0,0), breaks = seq(-50, 30, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) +
+facet_grid(Sex~.)
+
+p_diff_tissues
+```
+
+Effect of sex but no interaction
+
+```{r}
+anova(lm(diff_gut ~ Time_treatment + Sex, gg_data))
+anova(lm(diff_gonad ~ Time_treatment + Sex, gg_data))
+anova(lm(diff_carcass ~ Time_treatment + Sex, gg_data))
+
+
+pairs(emmeans(lm(diff_gut ~ Time_treatment + Sex, gg_data), ~ Time_treatment), adjust = "Tukey") 
+pairs(emmeans(lm(diff_gonad ~ Time_treatment + Sex, gg_data), ~ Time_treatment), adjust = "Tukey") 
+pairs(emmeans(lm(diff_carcass ~ Time_treatment + Sex, gg_data), ~ Time_treatment), adjust = "Tukey") 
+
+emmeans(lm(diff_gut ~ Time_treatment + Sex, gg_data), ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = 1) 
+emmeans(lm(diff_gonad ~ Time_treatment + Sex, gg_data), ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = 1) 
+emmeans(lm(diff_carcass ~ Time_treatment + Sex, gg_data), ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = 1) 
+```
+
+* Gonad does not change over time but has the largest differences
+* Gut and carcass changes over time
+
+# Carcass
+```{r}
+carcass_water_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(carcass_water),
+            se = sd(carcass_water) / sqrt(n()),
+            cv = (sd(carcass_water) / mean) * 100)
+knitr::kable(carcass_water_mean, digits = 3)
+
+ggplot() +
+  geom_point(data = gg_data, aes(Time, carcass_water, shape = Sex, colour = Sex), alpha = 0.6, stroke = NA, position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5)) +
+  geom_line(data = carcass_water_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = carcass_water_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = carcass_water_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Carcass water (mg)", limits = c(0, 250), expand = c(0,0), breaks = seq(0, 250, 50)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+```
+
+
+```{r}
+carcass_water_prop_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(carcass_water_prop),
+            se = sd(carcass_water_prop) / sqrt(n()),
+            cv = (sd(carcass_water_prop) / mean) * 100)
+knitr::kable(carcass_water_prop_mean, digits = 3)
+
+p_carcass <- ggplot() +
+  geom_point(data = gg_data, aes(Time, carcass_water_prop, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_line(data = carcass_water_prop_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = carcass_water_prop_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = carcass_water_prop_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Carcass water (% body water)", limits = c(20, 80), expand = c(0,0), breaks = seq(0, 150, 10)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+
+p_carcass
+```
+
+There is no interaction.
+
+```{r}
+carcass_mod <- lm(carcass_water_prop ~ Time_treatment + Sex, data = gg_data[gg_data$Time_treatment!="0_starved",])
+
+anova(carcass_mod)
+
+pairs(emmeans(carcass_mod, ~ Time_treatment), adjust = "Tukey") %>%
+  broom::tidy() %>% 
+  filter(adj.p.value <= 0.05)
+
+# Compare with 0 starved
+emmeans(carcass_mod, ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = "0") 
+```
+
+## Relative carcass water
+```{r}
+gg_data <- gg_data %>% 
+  mutate(standard_carcass_water = ifelse(Sex == "Female",
+                                        carcass_water/mean(gg_data[gg_data$Sex == "Female" & gg_data$Time == 0,]$carcass_water),
+                                        carcass_water/mean(gg_data[gg_data$Sex == "Male" & gg_data$Time == 0,]$carcass_water)))
+
+std_mean_carcass <- gg_data %>% 
+  group_by(Time_treatment, Sex, Time) %>% 
+  summarise(n = n(),
+            mean = mean(standard_carcass_water),
+            se = sd(standard_carcass_water) / sqrt(n()),
+            cv = (sd(standard_carcass_water) / mean) * 100)
+knitr::kable(std_mean_carcass, digits = 3)
+
+rel_carcass <- ggplot() + 
+  geom_hline(yintercept = 1, linetype = 3, colour = "grey30") +
+  geom_point(data = gg_data, aes(Time, standard_carcass_water, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = std_mean_carcass, aes(Time, mean, colour = Sex), linewidth = 0.5) +
+  geom_point(data = std_mean_carcass, aes(Time, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = std_mean_carcass, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Relative carcass water", limits = c(0.4, 1.6), expand = c(0,0), breaks = seq(0, 2, 0.2)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+
+rel_carcass_mod <- lm(standard_carcass_water ~ Time_treatment + Sex, data = gg_data)
+# No interaction
+anova(rel_carcass_mod)
+
+# Compare with 0 starved
+emmeans(rel_carcass_mod, ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = "0") 
+
+emmeans(rel_carcass_mod, ~ Time_treatment) %>% 
+  pairs(adjust = "Tukey")
+
+```
+
+```{r}
+diff_water <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(.groups = "drop",
+            n = n(),
+            # Tissue
+            mean_tissue = mean(diff_tissue),
+            se_tissue = sd(diff_tissue) / sqrt(n()),
+            # Gut 
+            mean_gut = mean(diff_gut),
+            se_gut = sd(diff_gut) / sqrt(n()),
+            # Gonad
+            mean_gonad = mean(diff_gonad),
+            se_gonad = sd(diff_gonad) / sqrt(n()),
+            # carcass
+            mean_carcass = mean(diff_carcass),
+            se_carcass = sd(diff_carcass) / sqrt(n()),
+            # Haem
+            mean_haem = mean(diff_haem),
+            se_haem = sd(diff_haem) / sqrt(n()),
+            # Total loss
+            mean_loss = mean(Desiccation_water_prop),
+            se_loss =  sd(Desiccation_water_prop) / sqrt(n()))
+
+diff_pal <- viridis::viridis(4, begin = 0.75, end = 0, option = "C")
+
+p_diff_tissues <- ggplot(gg_data, aes(x = Time)) + 
+  geom_hline(yintercept = 0, linetype = 3, colour = "grey30") +
+  # gut
+  geom_point(aes(y = diff_gut, colour = "Gut"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  geom_line(aes(y = mean_gut, colour = "Gut"), data = diff_water, linewidth = 0.5) +
+  geom_point(aes(y = mean_gut, colour = "Gut"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = diff_water, aes(ymin = mean_gut - se_gut, ymax = mean_gut + se_gut, colour = "Gut"), width = 1, linewidth = 0.5) +
+  # gonad
+  geom_point(aes(y = diff_gonad, colour = "Gonad"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  geom_line(aes(y = mean_gonad, colour = "Gonad"), data = diff_water, linewidth = 0.5) +
+  geom_point(aes(y = mean_gonad, colour = "Gonad"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = diff_water, aes(ymin = mean_gonad - se_gonad, ymax = mean_gonad + se_gonad, colour = "Gonad"), width = 1, linewidth = 0.5) +
+  # carcass
+  geom_point(aes(y = diff_carcass, colour = "Carcass"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  geom_line(aes(y = mean_carcass, colour = "Carcass"), data = diff_water, linewidth = 0.5) +
+  geom_point(aes(y = mean_carcass, colour = "Carcass"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = diff_water, aes(ymin = mean_carcass - se_carcass, ymax = mean_carcass + se_carcass, colour = "Carcass"), width = 1, linewidth = 0.5) +
+  # # total
+  # geom_point(aes(y = Desiccation_water_prop, colour = "Total loss"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  # geom_line(aes(y = mean_loss, colour = "Total loss"), data = diff_water, linewidth = 0.5) +
+  # geom_point(aes(y = mean_loss, colour = "Total loss"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  # geom_errorbar(data = diff_water, aes(ymin = mean_loss - se_loss, ymax = mean_loss + se_loss, colour = "Total loss"), width = 1, linewidth = 0.5) +
+  #   # haem
+  # geom_point(aes(y = diff_haem, colour = "haem"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  # geom_line(aes(y = mean_haem, colour = "haem"), data = diff_water, linewidth = 0.5) +
+  # geom_point(aes(y = mean_haem, colour = "haem"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  # # geom_errorbar(data = diff_water, aes(ymin = mean_haem - se_haem, ymax = mean_haem + se_haem, colour = "haem"), width = 1, linewidth = 0.5) +
+  #   # tissue
+  # geom_point(aes(y = diff_tissue, colour = "tissue"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  # geom_line(aes(y = mean_tissue, colour = "tissue"), data = diff_water, linewidth = 0.5) +
+  # geom_point(aes(y = mean_tissue, colour = "tissue"), data = diff_water, size = 2, shape = 1, show.legend = FALSE) +
+  # geom_errorbar(data = diff_water, aes(ymin = mean_tissue - se_tissue, ymax = mean_tissue + se_tissue, colour = "tissue"), width = 1, linewidth = 0.5) +
+  # Theme
+  scale_colour_manual(name = "Component", values = c("Gut" = diff_pal[3], "Gonad" = diff_pal[2], "Carcass" = diff_pal[1], "Total loss" = diff_pal[4])) +
+  scale_y_continuous(name = "Difference in body water (%)", limits = c(-15, 10), expand = c(0,0), breaks = seq(-50, 30, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) +
+facet_grid(~Sex)
+
+p_diff_tissues
+```
+
+```{r}
+anova(lm(diff_gut ~ Time_treatment + Sex, gg_data))
+anova(lm(diff_gonad ~ Time_treatment + Sex, gg_data))
+anova(lm(diff_carcass ~ Time_treatment + Sex, gg_data))
+
+
+pairs(emmeans(lm(diff_gut ~ Time_treatment + Sex, gg_data), ~ Time_treatment), adjust = "Tukey") 
+pairs(emmeans(lm(diff_gonad ~ Time_treatment + Sex, gg_data), ~ Time_treatment), adjust = "Tukey") 
+pairs(emmeans(lm(diff_carcass ~ Time_treatment + Sex, gg_data), ~ Time_treatment), adjust = "Tukey") 
+
+emmeans(lm(diff_gut ~ Time_treatment + Sex, gg_data), ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = 1) 
+emmeans(lm(diff_gonad ~ Time_treatment + Sex, gg_data), ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = 1) 
+emmeans(lm(diff_carcass ~ Time_treatment + Sex, gg_data), ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = 1) 
+```
+
+* Gonad does not change over time but has the largest differenes
+* Gut and carcass changes over time
+
+# Gut
+
+```{r}
+gut_water_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(gut_water),
+            se = sd(gut_water) / sqrt(n()),
+            cv = (sd(gut_water) / mean) * 100)
+knitr::kable(gut_water_mean, digits = 3)
+
+ggplot() +
+  geom_point(data = gg_data, aes(Time, gut_water, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_line(data = gut_water_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = gut_water_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = gut_water_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Gut water (mg)", limits = c(0, 70), expand = c(0,0), breaks = seq(0, 150, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+```
+
+```{r}
+gut_water_prop_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(gut_water_prop),
+            se = sd(gut_water_prop) / sqrt(n()),
+            cv = (sd(gut_water_prop) / mean) * 100)
+knitr::kable(gut_water_prop_mean, digits = 3)
+
+p_gut <- ggplot() +
+  geom_point(data = gg_data, aes(Time, gut_water_prop, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_line(data = gut_water_prop_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = gut_water_prop_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = gut_water_prop_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Gut water (% body water)", limits = c(0, 20), expand = c(0,0), breaks = seq(0, 150, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+
+p_gut
+```
+
+* No interaction.
+* Males decrease in gut water content only after prolonged desiccation.  
+* Males are not replenishing gut water after rehydration
+
+```{r}
+gut_mod <- lm(gut_water_prop ~ Time_treatment + Sex, data = gg_data[gg_data$Time_treatment!="0_starved",])
+
+anova(gut_mod)
+
+# Compare with 0 starved
+emmeans(gut_mod, ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = "0") 
+
+emmeans(gut_mod, ~ Time_treatment) %>% 
+  pairs(adjust = "Tukey")
+
+gut_mod2 <- update(gut_mod, . ~ . - Time_treatment:Sex)
+anova(gut_mod2)
+```
+
+## Relative gut water
+```{r}
+gg_data <- gg_data %>% 
+  mutate(standard_gut_water = ifelse(Sex == "Female",
+                                        gut_water/mean(gg_data[gg_data$Sex == "Female" & gg_data$Time == 0,]$gut_water),
+                                        gut_water/mean(gg_data[gg_data$Sex == "Male" & gg_data$Time == 0,]$gut_water)))
+
+std_mean_gut <- gg_data %>% 
+  group_by(Time_treatment, Sex, Time) %>% 
+  summarise(n = n(),
+            mean = mean(standard_gut_water),
+            se = sd(standard_gut_water) / sqrt(n()),
+            cv = (sd(standard_gut_water) / mean) * 100)
+knitr::kable(std_mean_gut, digits = 3)
+
+rel_gut <- ggplot() + 
+  geom_hline(yintercept = 1, linetype = 3, colour = "grey30") +
+  geom_point(data = gg_data, aes(Time, standard_gut_water, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = std_mean_gut, aes(Time, mean, colour = Sex), linewidth = 0.5) +
+  geom_point(data = std_mean_gut, aes(Time, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = std_mean_gut, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Relative gut water", limits = c(0.4, 1.6), expand = c(0,0), breaks = seq(0, 2, 0.2)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+
+rel_gut_mod <- lm(standard_gut_water ~ Time_treatment + Sex, data = gg_data)
+# No interaction
+anova(rel_gut_mod)
+
+# Compare with 0 starved
+emmeans(rel_gut_mod, ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = "0") 
+
+emmeans(rel_gut_mod, ~ Time_treatment) %>% 
+  pairs(adjust = "Tukey")
+
+```
+
+***
+
+# Gonad
+
+```{r}
+gonad_water_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(gonad_water),
+            se = sd(gonad_water) / sqrt(n()),
+            cv = (sd(gonad_water) / mean) * 100)
+knitr::kable(gonad_water_mean, digits = 3)
+
+ggplot() +
+  geom_point(data = gg_data, aes(Time, gonad_water, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_line(data = gonad_water_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = gonad_water_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = gonad_water_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Gonad water (mg)", limits = c(0, 200), expand = c(0,0), breaks = seq(0, 200, 50)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+```
+
+```{r}
+gonad_prop_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(gonad_water_prop),
+            se = sd(gonad_water_prop) / sqrt(n()),
+            cv = (sd(gonad_water_prop) / mean) * 100)
+knitr::kable(gonad_prop_mean, digits = 3)
+
+p_gonad <- ggplot() +
+  geom_point(data = gg_data, aes(Time, gonad_water_prop, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_line(data = gonad_prop_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = gonad_prop_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = gonad_prop_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Gonad water (% body water)", limits = c(0, 40), expand = c(0,0), breaks = seq(0, 150, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+
+p_gonad
+```
+
+No change in gonads.
+No interaction
+
+```{r}
+gonad_mod <- lm(gonad_water_prop ~ Time_treatment + Sex, data = gg_data[gg_data$Time_treatment!="0_starved",])
+
+anova(gonad_mod)
+
+pairs(emmeans(gonad_mod, ~ Time_treatment * Sex), adjust = "Tukey", by = "Sex") %>%
+  broom::tidy()
+
+gonad_mod2 <- update(gonad_mod, . ~ . - Time_treatment:Sex)
+anova(gonad_mod2)
+```
+
+## Relative gonad water
+```{r}
+gg_data <- gg_data %>% 
+  mutate(standard_gonad_water = ifelse(Sex == "Female",
+                                        gonad_water/mean(gg_data[gg_data$Sex == "Female" & gg_data$Time == 0,]$gonad_water),
+                                        gonad_water/mean(gg_data[gg_data$Sex == "Male" & gg_data$Time == 0,]$gonad_water)))
+
+std_mean_gonad <- gg_data %>% 
+  group_by(Time_treatment, Sex, Time) %>% 
+  summarise(n = n(),
+            mean = mean(standard_gonad_water),
+            se = sd(standard_gonad_water) / sqrt(n()),
+            cv = (sd(standard_gonad_water) / mean) * 100)
+knitr::kable(std_mean_gonad, digits = 3)
+
+rel_gonad <- ggplot() + 
+  geom_hline(yintercept = 1, linetype = 3, colour = "grey30") +
+  geom_point(data = gg_data, aes(Time, standard_gonad_water, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = std_mean_gonad, aes(Time, mean, colour = Sex), linewidth = 0.5) +
+  geom_point(data = std_mean_gonad, aes(Time, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = std_mean_gonad, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Relative gonad water", limits = c(0.2, 1.6), expand = c(0,0), breaks = seq(-100, 100, 0.2)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+
+rel_gonad_mod <- lm(standard_gonad_water ~ Time_treatment + Sex, data = gg_data)
+# No interaction
+anova(rel_gonad_mod)
+
+# Compare with 0 starved
+emmeans(rel_gonad_mod, ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = "0") 
+
+emmeans(rel_gonad_mod, ~ Time_treatment) %>% 
+  pairs(adjust = "Tukey")
+
+```
+
+```{r}
+gg_data <- mutate(gg_data, goand_pc = ((wet_gonad_mass - dry_gonad_mass) /wet_gonad_mass) *100)
+
+anova(lm(goand_pc ~ Time + Sex, gg_data))
+
+gg_data |> 
+  group_by( Sex) |> 
+  summarise(goand_pc_me = mean(goand_pc,na.rm = T),
+            goand_pcse = sd(goand_pc,na.rm = T)/sqrt(n()))
+
+ggplot() + 
+  geom_hline(yintercept = 1, linetype = 3, colour = "grey30") +
+  geom_point(data = gg_data, aes(Time, goand_pc, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Relative gonad water", limits = c(0, 100), expand = c(0,0), breaks = seq(-100, 100, 20)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+```
+
+
+# Haemolymph
+
+```{r}
+haem_water_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(haem_water),
+            se = sd(haem_water) / sqrt(n()),
+            cv = (sd(haem_water) / mean) * 100)
+knitr::kable(haem_water_mean, digits = 3)
+
+ggplot() +
+  geom_point(data = gg_data, aes(Time, haem_water, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_line(data = haem_water_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = haem_water_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = haem_water_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Haemolymph water (mg)", limits = c(0, 150), expand = c(0,0), breaks = seq(0, 200, 50)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+```
+
+
+```{r}
+haem_water_prop_mean <- gg_data %>% 
+  group_by(Time, Sex) %>% 
+  summarise(n = n(),
+            mean = mean(haem_water_prop),
+            se = sd(haem_water_prop) / sqrt(n()),
+            cv = (sd(haem_water_prop) / mean) * 100)
+knitr::kable(haem_water_prop_mean, digits = 3)
+
+p_haem <- ggplot() +
+  geom_point(data = gg_data, aes(Time, haem_water_prop, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_line(data = haem_water_prop_mean, aes(Time, mean, colour = Sex), linewidth = 0.5) + 
+  geom_point(data = haem_water_prop_mean, aes(Time, mean, colour = Sex), 
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = haem_water_prop_mean, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Haemolymph water (% body water)", limits = c(0, 50), expand = c(0,0), breaks = seq(0, 150, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+
+p_haem
+```
+
+No interaction.
+
+```{r}
+haem_mod <- lm(haem_water_prop ~ Time_treatment * Sex, data = gg_data)
+
+anova(haem_mod)
+
+pairs(emmeans(haem_mod, ~ Time_treatment * Sex), adjust = "Tukey", by = "Sex") %>%
+  broom::tidy()
+
+haem_mod2 <- update(haem_mod, . ~ . - Time_treatment:Sex)
+anova(haem_mod2)
+
+
+pairs(emmeans(haem_mod2, ~ Time_treatment), adjust = "Tukey") %>%
+  broom::tidy()
+```
+
+## Relative haemolymph water
+```{r}
+gg_data <- gg_data %>% 
+  mutate(standard_haem_water = ifelse(Sex == "Female",
+                                        haem_water/mean(gg_data[gg_data$Sex == "Female" & gg_data$Time == 0,]$haem_water),
+                                        haem_water/mean(gg_data[gg_data$Sex == "Male" & gg_data$Time == 0,]$haem_water)))
+
+std_mean_haem <- gg_data %>% 
+  group_by(Time_treatment, Sex, Time) %>% 
+  summarise(n = n(),
+            mean = mean(standard_haem_water),
+            se = sd(standard_haem_water) / sqrt(n()),
+            cv = (sd(standard_haem_water) / mean) * 100)
+knitr::kable(std_mean_haem, digits = 3)
+
+rel_haem <- ggplot() + 
+  geom_hline(yintercept = 1, linetype = 3, colour = "grey30") +
+  geom_point(data = gg_data, aes(Time, standard_haem_water, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = std_mean_haem, aes(Time, mean, colour = Sex), linewidth = 0.5) +
+  geom_point(data = std_mean_haem, aes(Time, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = std_mean_haem, aes(Time, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_y_continuous(name = "Relative haem water", limits = c(0.4, 1.6), expand = c(0,0), breaks = seq(0, 2, 0.2)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+rel_haem
+```
+
+# Figure
+```{r}
+load("data/Desiccation 2025/figures/p_relwater.rdata")
+
+p_tissuewater <- p_relwater + (p_gut + theme(legend.position = "none")) +
+  (p_gonad + theme(legend.position = "none"))  +
+  (p_carcass + theme(legend.position = "none")) + 
+  plot_layout(axis_titles = "collect" , guides = "collect") &
+  plot_annotation(tag_levels = 'A') 
+
+ggsave(p_tissuewater, dpi = 300, width = double_width, units = "mm", height = double_height, filename = "data/Desiccation 2025/figures/Fig4tissue_water.png")
+
+load("data/Desiccation 2025/figures/p_diffwater.rdata")
+
+p_rel_tissuewater <- p_diff_tissues + (rel_gut + theme(legend.position = "none")) +
+  (rel_gonad + theme(legend.position = "none"))  +
+  (rel_carcass + theme(legend.position = "none")) + 
+  plot_layout(axis_titles = "collect" , guides = "collect") &
+  plot_annotation(tag_levels = 'A') & theme(legend.title.position = "top")
+
+ggsave(p_rel_tissuewater, dpi = 300, width = double_width, units = "mm", height = double_height, filename = "data/Desiccation 2025/figures/Fig4rel_tissue_water.png")
+
+
+ p_diffwatertissue <- p_diff_water + (p_diff_tissues + theme(panel.spacing = unit(0.5, "lines"))) +
+   guide_area() +
+  plot_layout(guides = "collect", heights = c(1,2, 0.5)) & theme( legend.title.position = "top", legend.direction="vertical" ,legend.margin = margin(30, 0, 0, 0), legend.key.spacing.y = unit(-0.1, 'cm'), legend.position = "bottom") &  plot_annotation(tag_levels = 'A')  
+
+ggsave(p_diffwatertissue, dpi = 300, width = single_width, units = "mm", height = 170, filename = "data/Desiccation 2025/figures/diff_tissue_water.png")
+
+```
+

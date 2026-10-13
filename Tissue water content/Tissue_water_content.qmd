@@ -1,0 +1,1446 @@
+---
+subtitle: "Tissue wet mass"
+editor_options: 
+  chunk_output_type: console
+---
+
+# Introduction
+
+Aim 1: To determine whether crickets are losing fluid from tissue   
+Aim 2: To determine whether crickets are mobilizing lipid stores  
+
+There are 5 treatment groups:
+
+1. Control crickets 0 h of desiccation
+2. 3 h of desiccation
+3. 6 h of desiccation
+4. 18 h of desiccation
+5. 18 h of desiccation, then 6 h with water, no food (rehydration)
+6. 18 h of desiccation, then 6 h with water **and** food (fed)
+
+Treatment 6 was added because there is a strong effect of rehydration that is also explained by starvation. 
+
+# Setup
+```{r}
+#| include: false
+source("setup.R")
+library(lme4)
+library(lmerTest)
+```
+
+## Load data
+
+**Note: Variable labels are not exactly the same as the other datasets but are equivalent.**
+
+* Desiccation time: Time spent desiccating. Rehydrated crickets were desiccated for 18 hours
+* Start mass: Mass (mg) at the start of the experiment before desiccation
+* Whole animal wet mass: Mass (mg) after the end of the experiment. For control crickets (Time 0), end mass is start mass. For rehydrated crickets, mass is the same as post-desiccation mass.
+* Rehydrated transfer mass: Mass (mg) of rehydrated crickets after 18 hours of desiccation.
+* Tissue wet mass: Mass (mg) of wet tissue after blotting of haemolymph
+* Tissue dry mass: Mass (mg) of dried tissue
+* Haemolymph percentage: Percent (%) of whole animal wet mass that is haemolymph
+
+```{r}
+# Load mass data
+tissue_data <- read_excel("data/Desiccation 2025/Tissue water content/TissueWaterData.xlsx", sheet = "mass") %>%
+  mutate(Desiccation_time = ifelse(Time == 24, 18, Time),
+         Time_treatment = factor(Time_treatment, levels = c("0", "3", "6","18", "24_fed", "24_starved")),
+         Time_plot = ifelse(Time_treatment == "24_fed", 25, Time),
+         Start_mass = Start.Cricket - Start.Container,
+         Whole_animal_wet_mass = case_when(Time == 0 ~ Start_mass,
+                              .default = Beadmill.Cricket - Beadmill),
+         Rehydrated_transfer_mass = ifelse(Time == 24, Transfer.Cricket - Transfer.Container, NA),
+         Tissue_wet_mass = Beadmill.NoHaemolymph - Beadmill,
+         Tissue_dry_mass = Beadmill.DryCricket - Beadmill,
+         Percent_change = case_when(Time == 0 ~ NA,
+                                    Time == 24 ~ 100 - (Rehydrated_transfer_mass / Start_mass) * 100,
+                                    .default = 100 - (Whole_animal_wet_mass / Start_mass) * 100),
+         Total_water_content = ((Start_mass - Tissue_dry_mass) / Start_mass) * 100,
+         # Water lost during desiccation (%)
+         Relative_water_loss = (Percent_change /  Total_water_content) * 100,
+         # Calculate water loss rates
+         Mass_change_rate = ifelse(Time == 0, NA, Percent_change / Desiccation_time) # %/h
+  )
+         
+# Calculate water content in mg. Adds up to Body_water
+tissue_data <- tissue_data %>% 
+  mutate(
+    # Total amount of water in body
+    Body_water = Start_mass - Tissue_dry_mass,
+    # Water lost during desiccation
+    Lost_water = Start_mass - Whole_animal_wet_mass,
+    # Water in tissue post-desiccation
+    Tissue_water = Tissue_wet_mass - Tissue_dry_mass,
+    # Haemolymph post-desiccation
+    Haem_volume = Whole_animal_wet_mass - Tissue_wet_mass)
+         
+# Calculate proportion relative to total amount of body water
+tissue_data <- tissue_data %>% 
+  mutate(
+    # Water lost during desiccation
+    Lost_prop = ((Lost_water / Body_water) * 100),
+    # Water in tissue post-desiccation
+    Tissue_prop =  ((Tissue_water / Body_water) * 100),
+    # Haemolymph post-desiccation
+    Haem_prop =  ((Haem_volume / Body_water) * 100))
+
+# Standardise tissue and haemolymph changes relative to controls
+baseline <- tissue_data %>% 
+  group_by(Sex) %>% 
+  filter(Time == 0) %>% 
+  summarise(mean_tissue = mean(Tissue_prop),
+            mean_haem = mean(Haem_prop)) %>% 
+  data.frame(row.names = c("F", "M"))
+
+tissue_data <- tissue_data %>% 
+  mutate(rel_tissue = ifelse(Sex == "Female", Tissue_prop / baseline["F","mean_tissue"],
+                             Tissue_prop / baseline["M","mean_tissue"]),
+         rel_haem = ifelse(Sex == "Female", Haem_prop / baseline["F","mean_haem"],
+                             Haem_prop / baseline["M","mean_haem"]),
+         rel_loss = (Body_water - Lost_water) / Body_water,
+         diff_tissue = ifelse(Sex == "Female", Tissue_prop - baseline["F","mean_tissue"],
+                             Tissue_prop - baseline["M","mean_tissue"]),
+         diff_haem = ifelse(Sex == "Female", Haem_prop - baseline["F","mean_haem"],
+                             Haem_prop - baseline["M","mean_haem"]))
+```
+
+## Rehydrated crickets
+
+Calculate relative mass change during recovery to compare with other datasets.
+
+```{r}
+rehydration_tissue <- tissue_data %>% 
+  filter(Time == 24) %>% 
+  mutate(Percent_change = 100 - (Rehydrated_transfer_mass / Start_mass) * 100,
+         Percent_change_recovery = (Whole_animal_wet_mass / Start_mass) * 100) %>% 
+  select(Cricket_ID, Sex, Time_treatment, Percent_change, Percent_change_recovery) %>% 
+  mutate(Start_Percent = 100,
+         Percent_change = 100 - Percent_change) %>% 
+  pivot_longer(contains("Percent"), names_to = "Timepoint", values_to = "Change") %>% 
+  mutate(Experiment = "Tissue",
+    Timepoint = factor(Timepoint, levels = c("Start_Percent", "Percent_change", "Percent_change_recovery"))) 
+
+save(tissue_data, rehydration_tissue, file = "data/Desiccation 2025/tissue.Rdata")
+
+ggplot(rehydration_tissue, aes(Timepoint, Change, group = Cricket_ID, colour = Time_treatment)) +
+  geom_hline(yintercept = 100, linetype = 2) +
+  geom_line(linewidth = 1, alpha = 0.3) +
+  theme(legend.position = "right") +
+  ylab("Relative mass change (%)") +
+  scale_y_continuous(breaks = seq(0, 120, 5), limits = c(70, 120), expand = c(0, 0)) +
+  scale_x_discrete(name = "Time point", labels = c("Pre-desiccation", "Post-desiccation", "Post-recovery")) +
+  facet_grid(~Sex) +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Changes in wet mass
+
+```{r}
+tissue_data %>% 
+  mutate(Rehydrated_transfer_mass = ifelse(is.na(Rehydrated_transfer_mass), Start_mass, Rehydrated_transfer_mass)) %>% 
+  select(Cricket_ID, Sex, Time_treatment,Start_mass, Whole_animal_wet_mass, Rehydrated_transfer_mass) %>% 
+  pivot_longer(cols = matches(c("Start_mass", "Whole_animal_wet_mass", "Rehydrated_transfer_mass")), names_to = "Timepoint", values_to = "Mass") %>% 
+  mutate(Timepoint = factor(Timepoint, levels = c("Start_mass", "Rehydrated_transfer_mass", "Whole_animal_wet_mass"))) %>% 
+  ggplot(aes(Timepoint, Mass, colour = Sex, group = Cricket_ID)) +
+  geom_line() +
+  facet_wrap(~Sex, scales = "free") +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+scale_y_continuous(breaks = seq(0, 1000, 100), limits = c(70, 1000), expand = c(0, 0)) +
+  scale_x_discrete(name = "Time point", labels = c("Pre-desiccation", "Post-desiccation", "Post-recovery")) +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+# Are crickets losing haemolymph?
+
+Measured gravimetrically. Indicating preferential loss or replenishment of extracellular fluid.
+
+```{r}
+mean_vol <- tissue_data %>% 
+  group_by(Time_treatment, Sex, Time_plot) %>% 
+  summarise(n = n(),
+            mean = mean(Haem_volume),
+            se = sd(Haem_volume) / sqrt(n()),
+            cv = (sd(Haem_volume) / mean) * 100)
+knitr::kable(mean_vol, digits = 3)
+
+mean_vol_starved <- filter(mean_vol, Time_treatment != "24_fed")
+mean_vol_fed <- filter(mean_vol, Time_treatment %in% c("18", "24_fed"))
+```
+
+```{r}
+#| fig-cap: "Haemolymph volume (mg) of female (orange) and male (blue) crickets after desiccation (hours). Error bars are standard error about the mean."
+p_volume <- ggplot() + 
+  geom_point(data = tissue_data, aes(Time_plot, Haem_volume, shape = Sex, colour = Sex), position = position_jitter(width = 0.2, height = 0), alpha = 0.6) +
+     # line for starved crickets
+  geom_line(data = mean_vol_starved, aes(Time_plot, mean, colour = Sex, linetype = "Starved")) +
+   # Line for fed crickets
+  geom_line(data = mean_vol_fed, aes(Time_plot, mean, colour = Sex, linetype = "Fed")) +
+  geom_point(data = mean_vol, aes(Time_plot, mean, colour = Sex), 
+             size = 2.5, shape = 16) +
+  geom_errorbar(data = mean_vol, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 0.3) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+    scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = "Haemolymph volume (mg)", limits = c(0, 210), expand = c(0,0), breaks = seq(0, 250, 10)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"), limits = c(-0.3, 25.3)) +
+  theme(legend.position = "right")
+
+p_volume
+```
+
+## Stats: Haem volume
+
+ * No interaction between time and sex. The interaction is dropped from the model.  
+ * No differences between sexes. Sex is dropped from the model.
+ * Crickets decrease haemolymph volume after 6 hours then recover volume.
+ * No change within 3 hours.
+ * No effect of feeding during recovery.
+ 
+```{r}
+hv_mod <- lm(Haem_volume ~ Start_mass + Time_treatment, tissue_data) 
+
+anova(hv_mod)
+
+pairs(emmeans(hv_mod, ~ Time_treatment), adjust = "Tukey") %>%
+  broom::tidy() %>% 
+  arrange(.$adj.p.value)
+```
+
+# Are crickets losing tissue water content?
+
+Or are they preferentially losing water from their extracellular spaces instead.
+
+Crickets are losing whole body wet mass during desiccation and their tissue wet mass. Their haemolymph mass is decreasing then increasing. Their dry mass was lower than the other treatments, so proportionally, they have lost more water from their tissue after drying in the oven, giving higher tissue water content.
+
+```{r}
+mean_tissue <- tissue_data %>% 
+  group_by(Time_treatment, Sex, Time_plot) %>% 
+  summarise(n = n(),
+            mean = mean(Tissue_water),
+            se = sd(Tissue_water) / sqrt(n()),
+            cv = (sd(Tissue_water) / mean) * 100)
+knitr::kable(mean_tissue, digits = 3)
+
+mean_tissue_starved <- filter(mean_tissue, Time_treatment != "24_fed")
+mean_tissue_fed <- filter(mean_tissue, Time_treatment %in% c("18", "24_fed"))
+```
+
+```{r}
+p_water <- ggplot() + 
+  geom_point(data = tissue_data, aes(Time_plot, Tissue_water, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = mean_tissue_starved, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = mean_tissue_fed, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +  
+  geom_point(data = mean_tissue, aes(Time_plot, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = mean_tissue, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = "Tissue water content (%)", limits = c(100, 450), expand = c(0,0), breaks = seq(0, 500, 50)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+
+p_water
+
+ggsave(p_water, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/tissue_water.png")
+```
+
+## Relative to body water
+
+```{r}
+body_mean_tissue <- tissue_data %>% 
+  group_by(Time_treatment, Sex, Time_plot) %>% 
+  summarise(.groups = "drop",
+            n = n(),
+            mean = mean(Tissue_prop),
+            se = sd(Tissue_prop) / sqrt(n()),
+            cv = (sd(Tissue_prop) / mean) * 100)
+knitr::kable(body_mean_tissue, digits = 3)
+
+body_mean_tissue_starved <- filter(body_mean_tissue, Time_treatment != "24_fed")
+body_mean_tissue_fed <- filter(body_mean_tissue, Time_treatment %in% c("18", "24_fed"))
+
+p_relwater <- ggplot() + 
+  geom_point(data = tissue_data, aes(Time_plot, Tissue_prop, shape = Sex, colour = Sex), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = body_mean_tissue_starved, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = body_mean_tissue_fed, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +  
+  geom_point(data = body_mean_tissue, aes(Time_plot, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = body_mean_tissue, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = "Tissue water (% body water)", limits = c(50, 100), expand = c(0,0), breaks = seq(0, 100, 10)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+
+tissue_mod <- lm(Tissue_prop ~ Time_treatment + Sex, tissue_data) 
+anova(tissue_mod)
+pairs(emmeans(tissue_mod, ~ Time_treatment), adjust = "Tukey") %>%
+  broom::tidy() %>% 
+  arrange(adj.p.value) %>% 
+  filter(adj.p.value <= 0.05)
+
+p_relwater
+
+save(p_relwater, file = "data/Desiccation 2025/figures/p_relwater.rdata")
+ggsave(p_relwater, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/relative_tissue_water.png")
+```
+
+## Ratio to control
+
+```{r}
+rel_mean_tissue <- tissue_data %>% 
+  group_by(Time_treatment, Time_plot) %>% 
+  summarise(.groups = "drop",
+            n = n(),
+            mean = mean(rel_tissue),
+            se = sd(rel_tissue) / sqrt(n()),
+            cv = (sd(rel_tissue) / mean) * 100,
+            mean_haem = mean(rel_haem),
+            se_haem = sd(rel_haem) / sqrt(n()))
+
+knitr::kable(rel_mean_tissue, digits = 3)
+
+rel_mean_tissue_starved <- filter(rel_mean_tissue, Time_treatment != "24_fed")
+rel_mean_tissue_fed <- filter(rel_mean_tissue, Time_treatment %in% c("18", "24_fed"))
+
+rel_water <- ggplot() + 
+  geom_hline(yintercept = 1, linetype = 3, colour = "grey30") +
+  geom_point(data = tissue_data, aes(Time_plot, rel_tissue, colour = "Tissue"), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+  geom_point(data = tissue_data, aes(Time_plot, rel_haem, colour = "Haemolymph"), position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = rel_mean_tissue_starved, aes(Time_plot, mean, colour = "Tissue", linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = rel_mean_tissue_fed, aes(Time_plot, mean, colour = "Tissue", linetype = "Fed"), linewidth = 0.5) +
+  # line for starved crickets - haem
+  geom_line(data = rel_mean_tissue_starved, aes(Time_plot, mean_haem, colour = "Haemolymph", linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets - haem
+  geom_line(data = rel_mean_tissue_fed, aes(Time_plot, mean_haem, colour = "Haemolymph", linetype = "Fed"), linewidth = 0.5) +  
+  geom_point(data = rel_mean_tissue, aes(Time_plot, mean, colour = "Tissue"),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = rel_mean_tissue, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = "Tissue"), width = 1, linewidth = 0.5) +
+  geom_point(data = rel_mean_tissue, aes(Time_plot, mean_haem, colour = "Haemolymph"),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = rel_mean_tissue, aes(Time_plot, ymin = mean_haem - se_haem, ymax = mean_haem + se_haem,
+                                     colour = "Haemolymph"), width = 1, linewidth = 0.5) +
+    scale_colour_manual(name = "Location", values = c("Tissue" = "black", "Haemolymph" = "#009E73")) +
+  scale_y_continuous(name = "Ratio to baseline", limits = c(0.4, 1.5), expand = c(0,0), breaks = seq(0, 2, 0.1)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) +
+    scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only"))
+
+rel_water
+save(rel_water, file = "data/Desiccation 2025/figures/p_stdwater.rdata")
+```
+
+## Difference from control
+
+No effect of sex so dropped
+
+```{r}
+diff_mean_tissue <- tissue_data %>% 
+  group_by(Time_treatment, Time_plot) %>% 
+  summarise(.groups = "drop",
+            n = n(),
+            mean = mean(diff_tissue),
+            se = sd(diff_tissue) / sqrt(n()),
+            cv = (sd(diff_tissue) / mean) * 100,
+            mean_haem = mean(diff_haem),
+            se_haem = sd(diff_haem) / sqrt(n()),
+            mean_loss = -mean(Lost_prop),
+            se_loss =  sd(Lost_prop) / sqrt(n()))
+
+knitr::kable(diff_mean_tissue, digits = 3)
+
+diff_mean_tissue_starved <- filter(diff_mean_tissue, Time_treatment != "24_fed")
+diff_mean_tissue_fed <- filter(diff_mean_tissue, Time_treatment %in% c("18", "24_fed"))
+
+diff_pal <- viridis::viridis(3, begin = 0.8, end = 0, option = "D")
+
+p_diff_water <- ggplot() + 
+  geom_hline(yintercept = 0, linetype = 3, colour = "grey30") +
+  # geom_point(data = tissue_data, aes(Time_plot, diff_tissue, colour = "Tissue", ), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  # geom_point(data = tissue_data, aes(Time_plot, diff_haem, colour = "Haemolymph"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+  # geom_point(data = tissue_data, aes(Time_plot, -Lost_prop, colour = "Total loss"), position = position_jitter(height = 0, width = 0.1), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = diff_mean_tissue_starved, aes(Time_plot, mean, colour = "Tissue", linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = diff_mean_tissue_fed, aes(Time_plot, mean, colour = "Tissue", linetype = "Fed"), linewidth = 0.5) +
+  # line for starved crickets - haem
+  geom_line(data = diff_mean_tissue_starved, aes(Time_plot, mean_haem, colour = "Haemolymph", linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets - haem
+  geom_line(data = diff_mean_tissue_fed, aes(Time_plot, mean_haem, colour = "Haemolymph", linetype = "Fed"), linewidth = 0.5) +  
+  # line for starved crickets - total
+  geom_line(data = diff_mean_tissue_starved, aes(Time_plot, mean_loss, colour = "Total loss", linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets - total
+  geom_line(data = diff_mean_tissue_fed, aes(Time_plot, mean_loss, colour = "Total loss", linetype = "Fed"), linewidth = 0.5) +  
+  geom_point(data = diff_mean_tissue, aes(Time_plot, mean, colour = "Tissue", ),
+             size = 2, shape = 1, show.legend = FALSE) +
+  # Error bar for tissue
+  geom_errorbar(data = diff_mean_tissue, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = "Tissue"), width = 1, linewidth = 0.5) +
+  # Point for haemolymph
+  geom_point(data = diff_mean_tissue, aes(Time_plot, mean_haem, colour = "Haemolymph"),
+             size = 2, shape = 1, show.legend = FALSE) +
+  # Error bar for haemolymph
+  geom_errorbar(data = diff_mean_tissue, aes(Time_plot, ymin = mean_haem - se_haem, ymax = mean_haem + se_haem,
+                                     colour = "Haemolymph"), width = 1, linewidth = 0.5) +
+  # Point for Total loss
+  geom_point(data = diff_mean_tissue, aes(Time_plot, mean_loss, colour = "Total loss"),
+             size = 2, shape = 1, show.legend = FALSE) +
+  # Error bar for Total loss
+  geom_errorbar(data = diff_mean_tissue, aes(Time_plot, ymin = mean_loss - se_loss, ymax = mean_loss + se_loss,
+                                     colour = "Total loss"), width = 1, linewidth = 0.5) +
+    scale_colour_manual(name = "Component", values = c("Tissue" = diff_pal[3], "Haemolymph" = diff_pal[2], "Total loss" = diff_pal[1])) +
+  scale_y_continuous(name = "Body water lost (%)", limits = c(-20, 5), expand = c(0,0), breaks = seq(-30, 30, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) +
+    scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only"))
+
+p_diff_water
+
+ggsave(p_diff_water, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/difference_tissue_water.png")
+save(p_diff_water, file = "data/Desiccation 2025/figures/p_diffwater.rdata")
+```
+
+## Stats: Tissue water content
+
+ * Strong sex differences: Females have more tissue mass than males. 
+ * Proportion of water in tissue mass increases after rehydration. Losing tissue? Rather than over rehydrating.
+ * No change within 3-6 hours.
+ * Consistent effect of starvation:
+     * Fed crickets were the same as the other time points.
+     * Starved crickets had lighter dry mass, so has proportionally more water.
+ 
+```{r}
+tissue_mod <- lm((Tissue_water/Whole_animal_wet_mass) ~ Time_treatment * Sex, tissue_data) 
+
+anova(tissue_mod)
+
+pairs(emmeans(tissue_mod, ~ Time_treatment * Sex), adjust = "Tukey", by = "Sex") %>%
+  broom::tidy() %>% 
+  filter(adj.p.value <= 0.05)
+```
+
+### Relative change
+
+No effect of sex
+```{r}
+anova(lm(rel_tissue ~ Time_treatment, tissue_data))
+
+pairs(emmeans(lm(rel_tissue ~ Time_treatment, tissue_data), ~ Time_treatment), adjust = "Tukey") 
+
+anova(lm(rel_haem ~ Time_treatment + Sex, tissue_data))
+
+pairs(emmeans(lm(rel_haem ~ Time_treatment + Sex, tissue_data), ~ Time_treatment), adjust = "Tukey") 
+```
+
+### Difference
+
+No effect of sex
+```{r}
+anova(lm(diff_tissue ~ Time_treatment, tissue_data))
+anova(lm(diff_haem ~ Time_treatment, tissue_data))
+
+pairs(emmeans(lm(diff_tissue ~ Time_treatment, tissue_data), ~ Time_treatment), adjust = "Tukey") 
+pairs(emmeans(lm(diff_haem ~ Time_treatment, tissue_data), ~ Time_treatment), adjust = "Tukey") 
+```
+
+# Are crickets losing tissue mass?
+
+Indicating that they are using fat stores or breaking down muscle.
+
+There is a strong starting mass effect (probably a cohort effect) so tissue dry mass is reported as a ratio of starting mass.
+
+```{r}
+mean_tissue_dry <- tissue_data %>% 
+  group_by(Time_treatment, Sex, Time_plot) %>% 
+  summarise(n = n(),
+            mean = mean(Tissue_dry_mass),
+            se = sd(Tissue_dry_mass) / sqrt(n()),
+            cv = (sd(Tissue_dry_mass) / mean) * 100)
+knitr::kable(mean_tissue_dry, digits = 3)
+
+mean_tissue_dry_starved <- filter(mean_tissue_dry, Time_treatment != "24_fed")
+mean_tissue_dry_fed <- filter(mean_tissue_dry, Time_treatment %in% c("18", "24_fed"))
+```
+
+
+```{r}
+p_tissue <- ggplot() + 
+  geom_point(data = tissue_data, aes(Time_plot, Tissue_dry_mass, shape = Sex, colour = Sex), position = position_jitter(width = 0.1, height = 0), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = mean_tissue_dry_starved, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = mean_tissue_dry_fed, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +  
+  geom_point(data = mean_tissue_dry, aes(Time_plot, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = mean_tissue_dry, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = expression("Dried tissue mass (mg)"), limits = c(0, 350), expand = c(0,0), breaks = seq(0, 400, 050)) +  
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+
+p_tissue
+
+ggsave(p_tissue, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/tissue_drymass.png")
+```
+
+## Stats: Tissue dry mass
+
+no interaction
+
+```{r}
+tissue_dry_mod <- lm(Tissue_dry_mass ~ Start_mass + Time_treatment + Sex + Start_mass:Sex + Start_mass:Time_treatment +Time_treatment:Sex, tissue_data) 
+
+anova(tissue_dry_mod)
+
+pairs(emmeans(tissue_dry_mod, ~ Time_treatment * Sex), adjust = "Tukey", by = "Sex") %>%
+  broom::tidy() %>% 
+  filter(adj.p.value <= 0.05)
+```
+
+# Are crickets using their lipid stores?
+
+Load data
+```{r}
+#| warning: false
+library(cellranger)
+
+# Join sample mass with metadata
+lipid_data <- read_excel("data/Desiccation 2025/Tissue water content/TissueWaterData.xlsx", sheet = "lipid_sample_mass") %>% 
+  left_join(., tissue_data, by = "Cricket_ID")
+
+# Define the locations of the necessary files
+lipid_plate_map <- "data/desiccation 2025/tissue water content/lipid_plate_map.xlsx"
+lipid_spec_folder <- "data/desiccation 2025/tissue water content/spec_folder/lipid/"
+
+# Get sample IDs for filtering data
+list_sampleID_lipid <- list(lipid_data$Label)
+
+# Load plate metadata
+list_map_lipid <- lipid_plate_map %>% 
+  # Get sheet names
+  excel_sheets() %>%
+  # Use sheet names to name the list
+  set_names() %>% 
+  # Import each sheet into a list
+  map(read_excel, 
+      path = lipid_plate_map, range = "A1:L8", col_names = paste(1:12))
+
+# Get list names for housekeeping
+list_names_lipid <- names(list_map_lipid)
+
+# Load absorbance data. Every file in the folder should be the an xlsx file.
+list_spec_lipid <- list.files(lipid_spec_folder, full.names = TRUE) %>% 
+  # Import each file into a list
+  map(read_excel, range = "B2:M9", col_names = paste(1:12), col_types = "numeric") %>% 
+  # Use file names to name the list
+  setNames(list_names_lipid)
+```
+
+```{r}
+# Functions
+# 1. load plate
+f_plate <- function(platemap, spec){ 
+  # Create data frame of absorbances and metadata 
+  plate <- data.frame(grid = paste0(rep(LETTERS[1:8], 12), sort(rep(1:12, 8))),
+                      well = 1:96,
+                      Label = as.character(unlist(platemap)),
+                      absorbance = as.numeric(unlist(spec))) %>%
+    # Remove empty wells
+    drop_na(Label)
+  return(plate)
+}
+# Quality control function to identify deviant wells. Defaults to 10%
+bad_well <- function(plate, deviance = 10){
+  plate %>% 
+    # Calculate median absorbance
+    group_by(Label) %>% 
+    mutate(median_abs = median(absorbance, na.rm = TRUE)) %>%
+    ungroup() %>% 
+    # Identify deviant wells within the tolerance range
+    mutate(bad_well = ifelse(absorbance <= median_abs * (1 + (deviance/100))  & absorbance >= median_abs * (1 - (deviance/100)), "OK", "Remove")) %>% 
+    # Remove surplus columns
+    select(-median_abs) 
+}
+# 2. Correct for blank
+f_correction <- function(plate){ 
+  plate %>% 
+    group_by(Label) %>% 
+    # Calculate mean absorbance of the replicates
+    summarise(mean_absorbance = mean(absorbance, na.rm = TRUE)) %>% 
+    # Subtract the mean of the blank from the mean of the samples/
+    mutate(corrected_abs = mean_absorbance - mean_absorbance[Label == "0"])
+}
+# 3. Fit standard curve
+f_standard_curve <- function(plate, sampleID){
+
+  standard_curve_model <- plate %>% 
+    # Subset only the standards
+    filter(!Label %in% sampleID) %>% 
+    # Fit the linear model
+    lm(corrected_abs ~ as.numeric(Label), .)
+  
+  # Extract the Coefficient of Determination
+  r2 <- round(summary(standard_curve_model)$r.squared, 3) * 100 
+  # Extract the slope and intercept
+  slope <- standard_curve_model$coefficients[2] 
+  intercept <- standard_curve_model$coefficients[1] 
+  
+  return(list(r2, slope, intercept, standard_curve_model))
+}
+# 4. Plot standard curve
+standard_curve_fig <- function(corrected_plate, list_names, list_sampleID, standard_curve){
+  # Plot of standards
+  plot(corrected_abs ~ as.numeric(Label), corrected_plate[!corrected_plate$Label %in% list_sampleID,], 
+       xlab = "Concentration",
+       ylab = "Absorbance")
+  # Fitted line
+  abline(pluck(standard_curve, 4))
+  # Plate ID and title
+  title(paste0(list_names, " R2 = ", pluck(standard_curve, 1), "%"))
+  # Equation of line
+  text(y = max(corrected_plate$corrected_abs,na.rm = TRUE), 
+       x = 0, 
+       paste0("Absorbance = ", round(pluck(standard_curve, 2), 2), " x Concentration + ", round(pluck(standard_curve, 3), 2)),
+       adj = c(0, 1))
+}
+# 5. Calculate well concentration
+f_samples <- function(plate, standard_curve, sampleID){
+  plate %>% 
+    # Keep only samples
+    filter(Label %in% c(sampleID)) %>% 
+    # Calculate well concentration 
+    mutate(well_conc = (corrected_abs - pluck(standard_curve, 3)) / pluck(standard_curve, 2))
+}
+# 6. Plot well concentration
+well_conc_fig <- function(assay, list_names){
+  # Plot of well concentrations
+   barplot(well_conc ~ Label, assay, 
+     xlab = "Sample",
+     ylab = "Concentration",
+     ylim = c(0, max(assay$well_conc, na.rm = TRUE) * 1.2)) 
+  # Plate ID and title
+  title(list_names)
+}
+```
+
+```{r}
+#| warning: false
+
+list_plate_lipid <- map2(list_map_lipid, list_spec_lipid, f_plate) %>%  setNames(list_names_lipid) # Uncorrected values
+
+# Flag the deviant wells
+list_plate_lipid <- map(list_plate_lipid, bad_well)
+# Remove the deviant wells
+list_plate_lipid <- map(list_plate_lipid, \(x) filter(x, bad_well == "OK")) %>% setNames(list_names_lipid) 
+```
+
+Only plate 8 wells to remove.
+
+Correct for the blank
+```{r}
+list_corrected_plate_lipid <- map(list_plate_lipid, f_correction) %>% setNames(list_names_lipid) # Averaged and corrected values
+```
+
+Fit model
+```{r}
+# Calculate standard curves
+standard_curve_lipid <- map2(list_corrected_plate_lipid, list_sampleID_lipid, f_standard_curve) %>% setNames(list_names_lipid)
+```
+
+Plot standard curve:
+```{r}
+#| eval: false
+#| message: false
+#| warning: false
+#| include: false
+pmap(list(list_corrected_plate_lipid, as.list(list_names_lipid), list_sampleID_lipid, standard_curve_lipid), standard_curve_fig)
+```
+
+> All standard curves look ok!
+
+Calculate sample concentration
+```{r}
+# Calculate well concentrations
+list_well_conc_lipid <- pmap(list(list_corrected_plate_lipid, standard_curve_lipid, list_sampleID_lipid), f_samples) %>% 
+  setNames(list_names_lipid) %>% 
+  map2(., list(select(lipid_data, Label, Tissue_dry_mass, Sample_mass)), \(assay, metadata) inner_join(assay, metadata, by = "Label"))
+```
+
+Plot the well concentration to check:
+
+```{r}
+#| eval: false
+#| include: false
+
+pmap(list(list_well_conc_lipid, as.list(list_names_lipid)), well_conc_fig)
+```
+
+Check spikes:
+```{r}
+spike_meta <- data.frame(plate = c("plate1", "plate2", "plate3", "plate4", "plate4", "plate5", "plate5", "plate6", "plate7", "plate7", "plate8", "plate8"),
+  standard_conc = c(0.972, 0.972, 0.972, 0.972, 1, 0.972, 1, NA, 0.975, 0.972, 4.5, 4.5), 
+                         vol_added = c(rep(75, 10), 20, 20), 
+                         total_volume = 150,
+                         spiked_ID = c("spike1", "spike2", "spike3", "spike4","spike4.chloroform","spike5", "spike5.chloroform", NA, "spike.old", "spike7", "spike8", "spike.buffer"),
+                         unspiked_ID = c("55", "3", "66", "23", "23", "77", "77", NA, "50.repeat","50.repeat", "92", "buffer")) %>% 
+  group_split(plate)
+
+# Function of equation defined above
+spike_recovery_fun <- function(assay, spike_metadata) {
+
+spike_recovery <- ((assay[assay$Label %in% spike_metadata$spiked_ID,]$well_conc - assay[assay$Label  %in% spike_metadata$unspiked_ID,]$well_conc) / ((spike_metadata$standard_conc * spike_metadata$vol_added) / spike_metadata$total_volume)) * 100
+
+spike_metadata$spike_recovery <- if(length(spike_recovery) != 0) {
+  spike_recovery
+  } else {NA}
+  return(spike_metadata)
+}
+
+# Return spike recovery (%) as list in order of plates
+spike_recovery <- map2(list_well_conc_lipid, spike_meta, spike_recovery_fun) %>% list_rbind()
+spike_recovery
+```
+
+> All spike recoveries are low. Using standard A gave extra high recoveries. Reason unclear.
+
+* 1 mL C:M volume
+* Lipid content is relative to tissue dry mass, not whole animal
+
+```{r}
+vanillin_drymass <- function(assay){
+
+assay$sampled_tissue_mg <- (assay$Sample_mass / (1 * 2/3)) * 0.15
+assay$mg_lipid_per_mg_tissue <- assay$well_conc / (assay$sampled_tissue_mg / 0.15)
+assay$total_lipid <- assay$mg_lipid_per_mg_tissue * assay$Tissue_dry_mass
+assay$lipid_percent <- (assay$total_lipid / assay$Tissue_dry_mass) * 100
+
+# standardised values to 100 mg tissue dry mass 
+assay$standardised_total <- assay$mg_lipid_per_mg_tissue * 80
+assay$standardised_percent <- (assay$standardised_total / 80) * 100
+
+return(assay)
+}
+
+lipid_content <- map(list_well_conc_lipid, vanillin_drymass) %>% list_rbind(names_to = "Plate")
+
+lipid_data <- left_join(lipid_data, lipid_content, by = c("Label", "Sample_mass", "Tissue_dry_mass"))
+
+lipid_data[lipid_data$Cricket_ID == 64, 30:38] <- NA # Not measured
+cricket64 <- lipid_data[lipid_data$Cricket_ID == 64,]
+
+lipid_data <- filter(lipid_data, Include_for_lipid == 1) %>% add_row(cricket64)
+```
+
+> Cricket 22 is very fatty. This has been measured twice. It is likely that the other fatty females are similarly fatty.
+
+> Cricket 64 was not measured.
+
+```{r}
+mean_total_lipid <- lipid_data %>% 
+  group_by(Time_treatment, Sex, Time, Time_plot) %>% 
+  drop_na(total_lipid) %>% 
+  summarise(n = n(),
+            mean = mean(total_lipid),
+            se = sd(total_lipid) / sqrt(n()),
+            cv = (sd(total_lipid) / mean) * 100)
+knitr::kable(mean_total_lipid, digits = 3)
+
+mean_total_starved_l <- filter(mean_total_lipid, Time_treatment != "24_fed")
+mean_total_fed_l <- filter(mean_total_lipid, Time_treatment %in% c("18", "24_fed"))
+```
+
+## Plot: Total lipids
+```{r}
+p_total_lipids <- ggplot() + 
+  geom_point(data = lipid_data, aes(Time_plot, total_lipid, shape = Sex, colour = Sex), position = position_jitter(width = 0.1, height = 0), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = mean_total_starved_l, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = mean_total_fed_l, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +
+  geom_point(data = mean_total_lipid, aes(Time_plot, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = mean_total_lipid, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = "Total lipid (mg)", limits = c(0, 35), expand = c(0,0), breaks = seq(0, 100, 5)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) +
+  theme(legend.position = "right")
+ 
+p_total_lipids
+```
+
+## Plot: mg lipid per mg dry mass
+
+```{r}
+mean_lipid <- lipid_data %>% 
+  group_by(Time_treatment, Sex, Time, Time_plot) %>% 
+  drop_na(mg_lipid_per_mg_tissue) %>% 
+  summarise(n = n(),
+            mean = mean(mg_lipid_per_mg_tissue),
+            var = var(mg_lipid_per_mg_tissue),
+            se = sd(mg_lipid_per_mg_tissue) / sqrt(n()),
+            cv = (sd(mg_lipid_per_mg_tissue) / mean) * 100)
+knitr::kable(mean_lipid, digits = 3)
+
+mean_lipid_starved <- filter(mean_lipid, Time_treatment != "24_fed")
+mean_lipid_fed <- filter(mean_lipid, Time_treatment %in% c("18", "24_fed"))
+```
+
+> Coefficients of variation are similarly high for all treatments. No reason to suspect one group is biased.
+
+
+```{r}
+p_lipid <- ggplot() + 
+  geom_point(data = lipid_data, aes(Time_plot, mg_lipid_per_mg_tissue, shape = Sex, colour = Sex, group = Time_treatment), position = position_jitterdodge(jitter.width = 0.1, jitter.height = 0, dodge = 0), alpha = 0.6, stroke = NA) +
+  # line for starved crickets
+  geom_line(data = mean_lipid_starved, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+  # Line for fed crickets
+  geom_line(data = mean_lipid_fed, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +
+  geom_point(data = mean_lipid, aes(Time_plot, mean, colour = Sex, group = Time_treatment),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = mean_lipid, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = expression("Lipid" ~ ("mg"%.%"mg DM"^-1)), limits = c(0, 0.14), expand = c(0,0), breaks = seq(0, 100, 0.02)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+ 
+p_lipid
+
+ggsave(p_lipid, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/tissue_lipids.png")
+```
+
+
+## Stats: Total lipids
+
+ * Three way interaction dropped
+ * Plate effect not significant, kept.
+ * F 18 vs 24 starved different
+ 
+```{r}
+full_l_mod <- lmer(total_lipid ~ Start_mass * Time_treatment * Sex + (1|Plate), data = lipid_data, REML = FALSE)
+
+anova(full_l_mod)
+# Three way interaction is not significant
+
+total_l_mod <- update(full_l_mod, .~. - Start_mass:Time_treatment:Sex)
+
+best_l_mod <- step(full_l_mod)
+print(best_l_mod)
+# Model selection drops three way interaction
+# Random term is not significant but keeps term
+
+anova(total_l_mod)
+
+pairs(emmeans(total_l_mod, ~ Time_treatment * Sex), adjust = "Tukey", by = "Sex") %>%
+  broom::tidy() |> 
+  filter(adj.p.value <= 0.05)
+```
+
+## Stats: Lipid per dry mass
+
+ * No interaction.
+ * There is a strong sex difference between males and females. Females have more lipid
+ * There is an overall time effect with 24h starved crickets being different to the control.
+ * There is a sex difference during recovery but this is not significant:
+     * Fed females do not change their lipid content but starved females do. Likely a starvation effect
+     * Starved males do not change their lipid content, but fed males do. Since their total lipids don't change, perhaps they are not assimilating lipids, but spending more.
+ 
+```{r}
+lipid_mod <- lmer(mg_lipid_per_mg_tissue ~ Time_treatment + Sex + (1|Plate), lipid_data) 
+anova(lipid_mod)
+
+pairs(emmeans(lipid_mod, ~ Time_treatment), adjust = "Tukey") %>%
+  broom::tidy() 
+
+emmeans(lipid_mod, ~ Time_treatment) %>% 
+  contrast(method = "trt.vs.ctrl", ref = 1) 
+```
+
+**Mixed effects model: Plate as a random effect**  
+
+ * No interaction
+ * No main effect of time - only between 0 and 24 (starved)
+
+Statistical power is above 81%
+```{r}
+#| eval: false
+#| include: false
+
+power_lipid <- lipid_data %>%
+group_by(Time_treatment, Sex, Time, Time_plot) %>%
+drop_na(mg_lipid_per_mg_tissue) %>%
+summarise(n = n(),
+mean = mean(mg_lipid_per_mg_tissue),
+var = var(mg_lipid_per_mg_tissue),
+se = sd(mg_lipid_per_mg_tissue) / sqrt(n()),
+cv = (sd(mg_lipid_per_mg_tissue) / mean) * 100)
+groupmeans <- power_lipid$mean
+power.anova.test(groups = length(groupmeans),
+between.var = var(groupmeans), within.var = power_lipid$var,
+n=8)
+```
+
+***
+
+# Are crickets using protein?
+
+```{r}
+# Join sample mass with metadata
+protein_data <- read_excel("data/Desiccation 2025/Tissue water content/TissueWaterData.xlsx", sheet = "protein_sample_mass") %>% 
+  left_join(., tissue_data, by = "Cricket_ID") %>% 
+  mutate(Label = as.character(Label))
+
+# Define the locations of the necessary files
+protein_plate_map <- "data/desiccation 2025/tissue water content/protein_plate_map.xlsx"
+protein_spec_folder <- "data/desiccation 2025/tissue water content/spec_folder/protein/"
+
+# Get sample IDs for filtering data
+list_sampleID_protein <- protein_data$Label %>% as.character() %>% list()
+
+# Load plate metadata
+list_map_protein <- protein_plate_map %>% 
+  # Get sheet names
+  excel_sheets() %>%
+  # Use sheet names to name the list
+  set_names() %>% 
+  # Import each sheet into a list
+  map(read_excel, 
+      path = protein_plate_map, range = "A1:L8", col_names = paste(1:12))
+
+# Get list names for housekeeping
+list_names_protein <- names(list_map_protein)
+
+# Load absorbance data. Every file in the folder should be the an xlsx file.
+list_spec_protein <- list.files(protein_spec_folder, full.names = TRUE) %>% 
+  # Import each file into a list
+  map(read_excel, range = "B2:M9", col_names = paste(1:12), col_types = "numeric") %>% 
+  # Use file names to name the list
+  setNames(list_names_protein)
+```
+
+
+```{r}
+#| warning: false
+list_plate_protein <- map2(list_map_protein, list_spec_protein, f_plate) %>%  setNames(list_names_protein) # Uncorrected values
+
+# Flag the deviant wells
+list_plate_protein <- map(list_plate_protein, bad_well)
+# Remove the deviant wells
+list_plate_protein <- map(list_plate_protein, \(x) filter(x, bad_well == "OK")) %>% setNames(list_names_protein) 
+```
+
+Correct for the blank
+```{r}
+list_corrected_plate_protein <- map(list_plate_protein, f_correction) %>% setNames(list_names_protein) # Averaged and corrected values
+```
+
+Fit model
+```{r}
+# Calculate standard curves
+standard_curve_protein <- map2(list_corrected_plate_protein, list_sampleID_protein, f_standard_curve) %>% setNames(list_names_protein)
+```
+
+Plot standard curve:
+```{r}
+#| eval: false
+#| message: false
+#| warning: false
+#| include: false
+pmap(list(list_corrected_plate_protein, as.list(list_names_protein), list_sampleID_protein, standard_curve_protein), standard_curve_fig)
+```
+
+> All standard curves look ok!
+
+Calculate sample concentration
+```{r}
+# Calculate well concentrations
+list_well_conc_protein <- pmap(list(list_corrected_plate_protein, standard_curve_protein, list_sampleID_protein), f_samples) %>% 
+  setNames(list_names_protein) %>% 
+  map2(., list(select(protein_data, Label, Tissue_dry_mass, Sample_mass, Dilution)), \(assay, metadata) inner_join(assay, metadata, by = "Label"))
+```
+
+Plot the well concentration to check:
+
+```{r}
+#| eval: false
+#| include: false
+
+pmap(list(list_well_conc_protein, as.list(list_names_protein)), well_conc_fig)
+```
+
+```{r}
+protein <- function(assay){
+
+  assay$mg_protein_per_mg_tissue <- (assay$well_conc * assay$Dilution) / assay$Sample_mass
+  assay$total_protein <- assay$mg_protein_per_mg_tissue * assay$Tissue_dry_mass
+  assay$protein_percent <- (assay$total_protein / assay$Tissue_dry_mass) * 100
+
+return(assay)
+}
+
+protein_content <- map(list_well_conc_protein, protein) %>% 
+  list_rbind(names_to = "Plate")
+protein_data <- left_join(protein_data, protein_content, by = c("Label", "Sample_mass", "Tissue_dry_mass", "Dilution")) %>% 
+  filter(Include_for_protein == 1)
+```
+
+## Plot: Total protein
+
+```{r}
+mean_total_protein <- protein_data %>% 
+  group_by(Time_treatment, Sex, Time, Time_plot) %>% 
+  drop_na(total_protein) %>% 
+  summarise(n = n(),
+            mean = mean(total_protein),
+            se = sd(total_protein) / sqrt(n()),
+            cv = (sd(total_protein) / mean) * 100)
+knitr::kable(mean_total_protein, digits = 3)
+
+mean_total_starved_p <- filter(mean_total_protein, Time_treatment != "24_fed")
+mean_total_fed_p <- filter(mean_total_protein, Time_treatment %in% c("18", "24_fed"))
+```
+
+
+```{r}
+p_total_protein <- ggplot() + 
+  geom_point(data = protein_data, aes(Time_plot, total_protein, shape = Sex, colour = Sex), position = position_jitter(width = 0.1, height = 0), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = mean_total_starved_p, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = mean_total_fed_p, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +
+  geom_point(data = mean_total_protein, aes(Time_plot, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = mean_total_protein, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = "Total protein (mg)", limits = c(0, 100), expand = c(0,0), breaks = seq(0, 100, 10)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) +
+  theme(legend.position = "right")
+
+p_total_protein
+```
+
+## Plot: Protein per dry mass
+
+```{r}
+mean_protein <- protein_data %>% 
+  group_by(Time_treatment, Sex, Time, Time_plot) %>% 
+  drop_na(mg_protein_per_mg_tissue) %>% 
+  summarise(n = n(),
+            mean = mean(mg_protein_per_mg_tissue),
+            var = var(mg_protein_per_mg_tissue),
+            se = sd(mg_protein_per_mg_tissue) / sqrt(n()),
+            cv = (sd(mg_protein_per_mg_tissue) / mean) * 100)
+knitr::kable(mean_protein, digits = 3)
+
+mean_protein_starved <- filter(mean_protein, Time_treatment != "24_fed")
+mean_protein_fed <- filter(mean_protein, Time_treatment %in% c("18", "24_fed"))
+```
+
+```{r}
+p_protein <- ggplot() + 
+  geom_point(data = protein_data, aes(Time_plot, mg_protein_per_mg_tissue, shape = Sex, colour = Sex, group = Time_treatment), position = position_jitter(width = 0.1, height = 0), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = mean_protein_starved, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = mean_protein_fed, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +
+  geom_point(data = mean_protein, aes(Time_plot, mean, colour = Sex, group = Time_treatment),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = mean_protein, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = expression("Protein" ~ ("mg"%.%"mg DM"^-1)), limits = c(0, 0.5), expand = c(0,0), breaks = seq(0, 100, 0.05)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+
+p_protein
+
+ggsave(p_protein, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/tissue_proteins.png")
+```
+
+## Stats: Total proteins
+
+ * Mixed model is singular - random effect dropped
+ * Three way interaction dropped
+ * Time:Sex is not significant, dropped
+ 
+```{r}
+# Random effect is singular - remove
+full_p_mod <- lm(total_protein ~ Start_mass * Time_treatment * Sex, data = protein_data)
+
+anova(full_p_mod)
+# Three way interaction is not significant
+
+total_p_mod <- update(full_p_mod, .~. - Start_mass:Time_treatment:Sex)
+
+total_p_mod <- update(total_p_mod, .~. -Time_treatment:Sex)
+
+anova(total_p_mod)
+
+best_p_mod <- step(full_p_mod)
+anova(best_p_mod)
+
+pairs(emmeans(total_p_mod, ~ Time_treatment + Sex), adjust = "Tukey", by = "Sex") %>%
+  broom::tidy() |> 
+  filter(adj.p.value <= 0.05)
+```
+
+## Stats: Protein per dry mass
+
+ * No interaction.
+ * No change over time, regardless of feeding state.
+ 
+```{r}
+protein_mod <- lmer(mg_protein_per_mg_tissue ~ Time_treatment + Sex + (1|Plate), protein_data) 
+
+anova(protein_mod)
+```
+
+***
+
+# Are crickets using carbohydrates?
+
+Quality control: Plate 6 has degraded samples compared to the other plates because the box was kept at -20C for a week. Keep only three of the points and sample 96.
+
+```{r}
+# Join sample mass with metadata
+carb_data <- read_excel("data/Desiccation 2025/Tissue water content/TissueWaterData.xlsx", sheet = "carb_sample_mass") %>% 
+  left_join(., tissue_data, by = "Cricket_ID") %>% 
+  mutate(Label = as.character(Label))
+
+# Define the locations of the necessary files
+carb_plate_map <- "data/desiccation 2025/tissue water content/carb_plate_map.xlsx"
+carb_spec_folder <- "data/desiccation 2025/tissue water content/spec_folder/carb/"
+
+# Get sample IDs for filtering data
+list_sampleID_carb <- carb_data$Label %>% as.character() %>% list()
+
+# Load plate metadata
+list_map_carb <- carb_plate_map %>% 
+  # Get sheet names
+  excel_sheets() %>%
+  # Use sheet names to name the list
+  set_names() %>% 
+  # Import each sheet into a list
+  map(read_excel, 
+      path = carb_plate_map, range = "A1:L8", col_names = paste(1:12))
+
+# Get list names for housekeeping
+list_names_carb <- names(list_map_carb)
+
+# Load absorbance data. Every file in the folder should be the an xlsx file.
+list_spec_carb <- list.files(carb_spec_folder, full.names = TRUE) %>% 
+  # Import each file into a list
+  map(read_excel, range = "B2:M9", col_names = paste(1:12), col_types = "numeric") %>% 
+  # Use file names to name the list
+  setNames(list_names_carb)
+```
+
+```{r}
+#| warning: false
+
+list_plate_carb <- map2(list_map_carb, list_spec_carb, f_plate) %>%  setNames(list_names_carb) # Uncorrected values
+
+# Flag the deviant wells
+list_plate_carb <- map(list_plate_carb, bad_well)
+# Remove the deviant wells
+list_plate_carb <- map(list_plate_carb, \(x) filter(x, bad_well == "OK")) %>% setNames(list_names_carb) 
+```
+
+Correct for the blank
+```{r}
+list_corrected_plate_carb <- map(list_plate_carb, f_correction) %>% setNames(list_names_carb) # Averaged and corrected values
+```
+
+Fit model
+```{r}
+# Calculate standard curves
+standard_curve_carb <- map2(list_corrected_plate_carb, list_sampleID_carb, f_standard_curve) %>% setNames(list_names_carb)
+```
+
+Plot standard curve:
+```{r}
+#| eval: false
+#| message: false
+#| warning: false
+#| include: false
+pmap(list(list_corrected_plate_carb, as.list(list_names_carb), list_sampleID_carb, standard_curve_carb), standard_curve_fig)
+```
+
+```{r}
+# Calculate well concentrations
+list_well_conc_carb <- pmap(list(list_corrected_plate_carb, standard_curve_carb, list_sampleID_carb), f_samples) %>% 
+  setNames(list_names_carb) %>% 
+  map2(., list(select(carb_data, Label, Tissue_dry_mass, Sample_mass)), \(assay, metadata) inner_join(assay, metadata, by = "Label"))
+```
+
+```{r}
+#| eval: false
+#| include: false
+# Well concentration plot
+pmap(list(list_well_conc_carb, as.list(list_names_carb)), well_conc_fig)
+```
+
+Check spikes:
+```{r}
+spike_meta <- data.frame(plate = c("plate1", "plate2", "plate3", "plate4", "plate5", rep("plate6", 8)),
+                         standard_conc = 0.5, 
+                         spiked_ID =  str_subset(carb_data$Label, "spike"),
+                         unspiked_ID = str_subset(carb_data$Label, "spike") %>% str_remove(., "spike")) %>% 
+  group_split(plate)
+
+
+# Function of equation defined above
+spike_recovery_fun <- function(assay, spike_metadata) {
+
+spike_recovery <- ((assay[assay$Label %in% spike_metadata$spiked_ID,]$well_conc - assay[assay$Label  %in% spike_metadata$unspiked_ID,]$well_conc/2) / spike_metadata$standard_conc) * 100
+
+spike_metadata$spike_recovery <- if(length(spike_recovery) != 0) {
+  spike_recovery
+  } else {NA}
+  return(spike_metadata)
+}
+
+# Return spike recovery (%) as list in order of plates
+spike_recovery <- map2(list_well_conc_carb, spike_meta, spike_recovery_fun) %>% list_rbind()
+spike_recovery
+```
+
+* 0.25 mL of water added to pellet
+* 0.5 mL supernatant extracted from initial digestion
+* 1 mL of KOH added to dry tissue
+
+```{r}
+anthrone <- function(assay){
+  assay$pellet_carb <- assay$well_conc * 0.25
+  assay$sample_carb <- (assay$pellet_carb / 0.5) * 1
+  assay$mg_carb_per_mg_tissue <- assay$sample_carb / assay$Sample_mass
+  assay$total_carb <- assay$mg_carb_per_mg_tissue * assay$Tissue_dry_mass 
+  assay$carb_percent <- (assay$total_carb / assay$Tissue_dry_mass) * 100
+  
+  return(assay)
+}
+
+carb_content <- map(list_well_conc_carb, anthrone) %>% list_rbind(names_to = "Plate")
+carb_data <- left_join(carb_data, carb_content, by = c("Label", "Sample_mass", "Tissue_dry_mass")) %>% 
+  filter(Include_for_carb == 1)
+
+```
+
+```{r}
+mean_total_carb <- carb_data %>% 
+  group_by(Time_treatment, Sex, Time, Time_plot) %>% 
+  drop_na(total_carb) %>% 
+  summarise(n = n(),
+            mean = mean(total_carb),
+            se = sd(total_carb) / sqrt(n()),
+            cv = (sd(total_carb) / mean) * 100)
+knitr::kable(mean_total_carb, digits = 3)
+
+mean_total_starved_c <- filter(mean_total_carb, Time_treatment != "24_fed")
+mean_total_fed_c <- filter(mean_total_carb, Time_treatment %in% c("18", "24_fed"))
+```
+
+## Plot: Total carbs
+
+```{r}
+p_total_carbs <- ggplot() + 
+  geom_point(data = carb_data, aes(Time_plot, total_carb, shape = Sex, colour = Sex), position = position_jitter(width = 0.1, height = 0), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = mean_total_starved_c, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = mean_total_fed_c, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +
+  geom_point(data = mean_total_carb, aes(Time_plot, mean, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = mean_total_carb, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = "Total glycogen (mg)", limits = c(0, 8), expand = c(0,0), breaks = seq(0, 100, 1)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) +
+  theme(legend.position = "right")
+ 
+p_total_carbs
+```
+
+## Plot: mg carb per mg dry mass
+
+```{r}
+mean_carb <- carb_data %>% 
+  group_by(Time_treatment, Sex, Time, Time_plot) %>% 
+  drop_na(mg_carb_per_mg_tissue) %>% 
+  summarise(n = n(),
+            mean = mean(mg_carb_per_mg_tissue),
+            var = var(mg_carb_per_mg_tissue),
+            se = sd(mg_carb_per_mg_tissue) / sqrt(n()),
+            cv = (sd(mg_carb_per_mg_tissue) / mean) * 100)
+knitr::kable(mean_carb, digits = 3)
+
+mean_carb_starved <- filter(mean_carb, Time_treatment != "24_fed")
+mean_carb_fed <- filter(mean_carb, Time_treatment %in% c("18", "24_fed"))
+```
+
+> Coefficients of variation are similarly high for all treatments. No reason to suspect one group is biased.
+
+```{r}
+p_carb <- ggplot() + 
+  geom_point(data = carb_data, aes(Time_plot, mg_carb_per_mg_tissue, shape = Sex, colour = Sex, group = Time_treatment), position = position_jitter(width = 0.1, height = 0), alpha = 0.6, stroke = NA) +
+   # line for starved crickets
+  geom_line(data = mean_carb_starved, aes(Time_plot, mean, colour = Sex, linetype = "Starved"), linewidth = 0.5) +
+   # Line for fed crickets
+  geom_line(data = mean_carb_fed, aes(Time_plot, mean, colour = Sex, linetype = "Fed"), linewidth = 0.5) +
+  geom_point(data = mean_carb, aes(Time_plot, mean, colour = Sex, group = Time_treatment),
+             size = 2, shape = 1, show.legend = FALSE) +
+  geom_errorbar(data = mean_carb, aes(Time_plot, ymin = mean - se, ymax = mean + se,
+                                     colour = Sex), width = 1, linewidth = 0.5) +
+  scale_colour_manual(values = sex_pal) +
+  scale_shape_manual(values = sex_point) +
+  scale_linetype_manual(name = "Recovery", values = c("Fed" = 2, "Starved" = 1), labels = c("Food and water", "Water only")) +
+  scale_y_continuous(name = expression("Glycogen" ~ ("mg"%.%"mg DM"^-1)), limits = c(0, 0.04), expand = c(0,0), breaks = seq(0, 100, 0.005)) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+ 
+p_carb
+
+ggsave(p_carb, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/tissue_carbs.png")
+```
+
+
+## Stats: Total carbs
+
+ * Plate is significant
+ * Only Start mass:Sex is significant
+ 
+```{r}
+full_c_mod <- lmer(total_carb ~ Start_mass * Time_treatment * Sex + (1|Plate), data = carb_data, REML = FALSE)
+
+anova(full_c_mod)
+# Three way interaction is not significant
+
+best_c_mod <- step(full_c_mod, reduce.random = F)
+print(best_c_mod)
+# Model selection drops three way interaction
+# Random term is significant
+
+total_c_mod <- get_model(best_c_mod)
+anova(total_c_mod)
+
+pairs(emmeans(total_c_mod, ~ Time_treatment + Sex), adjust = "Tukey", by = "Sex") %>%
+  broom::tidy() |> 
+  filter(adj.p.value <= 0.05)
+```
+
+## Stats: Carbs per dry mass
+
+ * No interaction.
+ * No effect of sex
+ * Fed crickets have more carbs than staved crickets after recovery - effect of food.
+ 
+```{r}
+carb_mod <- lmer(mg_carb_per_mg_tissue ~ Time_treatment + Sex + (1|Plate), carb_data) 
+anova(carb_mod)
+
+pairs(emmeans(carb_mod, ~ Time_treatment), adjust = "Tukey")
+
+contrast(emmeans(carb_mod, ~ Time_treatment), method = "trt.vs.ctrl", ref = "0")
+```
+
+***
+
+# Export data
+
+```{r}
+macros <- bind_cols(tissue_data, 
+          select(arrange(lipid_data, Cricket_ID), mg_lipid_per_mg_tissue, total_lipid, lipid_percent),
+          select(arrange(protein_data, Cricket_ID), mg_protein_per_mg_tissue, total_protein, protein_percent),
+          select(arrange(carb_data, Cricket_ID), mg_carb_per_mg_tissue, total_carb, carb_percent)) 
+write.csv(macros, "data/Desiccation 2025/Tissue water content/macromolecule_results.csv")
+save(lipid_data, protein_data, carb_data, file = "data/Desiccation 2025/Tissue water content/macromolecules.Rdata")
+```
+
+```{r}
+#| eval: true
+#| include: false
+macromolecules <- p_tissue +
+  p_lipid +
+  p_protein +
+  p_carb +
+  plot_layout(axis_titles = "collect" , guides = "collect") &
+  plot_annotation(tag_levels = 'A') 
+
+
+ggsave(macromolecules, dpi = 300, width = double_width, units = "mm", height = double_width, filename = "data/Desiccation 2025/figures/permassmacromolecules.png")
+
+tot_macromolecules <- (p_tissue + theme(legend.position = "none")) + p_total_lipids +
+  p_total_protein +
+  p_total_carbs +
+  plot_layout(axis_titles = "collect" , guides = "collect") &
+  plot_annotation(tag_levels = 'A') & theme(legend.direction="horizontal")
+
+ggsave(tot_macromolecules, dpi = 300, width = double_width, units = "mm", height = double_height, filename = "data/Desiccation 2025/figures/fig5macromolecules.png")
+```
+
+***
+
+# Conclusions
+
+1. Are crickets losing haemolymph?
+
+Yes, after 6 hours but both sexes restore the proportion of haemolymph after rehydration. This trend is also found in absolute haemolymph mass (mg). 
+
+2. Are crickets losing tissue water? 
+
+Even though crickets are losing wet mass throughout desiccation, they are maintaining the proportion of water in their tissue. Water is maintained even after using tissue (dry mass) at 18 hours.
+
+Tissue wet mass increases during rehydration for starved crickets but this is an increase in fluid, not in tissue so tissue dry mass is unchanged. This indicates rehydration observed as an increase in % tissue water.
+
+In fed crickets, water content does not differ to other time points, despite an increase in tissue dry mass (feed). Crickets are rehydrating but not over hydrating.
+
+Thus, crickets are not losing tissue water and are increasing hydration state during recovery.
+
+3. Are crickets using tissue? 
+
+Crickets do not appear to be using tissue at any time during desiccation. 
+
+Starved crickets are losing mass. This is likely an effect of starvation than desiccation. Fed crickets are gaining dry mass. Much of this mass is likely food in the gut.
+
+4. Are crickets using their lipid stores?
+
+Overall, crickets are using lipids after 24 hours, but this effect is not conserved within sex. This pattern is likely because of starvation.
+
+This lack of a trend could be explained by crickets metabolising tissue, as indicated by their tissue dry mass. Thus, proportional amount of lipid in the tissue is the same because the overall amount of tissue is lowered. 
+
+Male crickets are not using lipid stores if they are starved, but are using lipid stores if they are fed. Could they be more active or less conservative if feed is available? 
+
+5. Are crickets using their protein stores?
+
+Crickets are not using their protein stores. There is no difference between the amount of protein at 0 h and 18 h. Their total protein increases if they are fed, likely from the feed itself.
+
+6. Are crickets using their carbohydrate stores?
+
+No, they are not.
+
+> Crickets are able to tolerate and recover from desiccation. These tissue-level trends are more pronounced for females than males. Cricket are not losing dry mass during desiccation. Thus, there is limited support for using fat stores to aid recovery of water during desiccation.
+
+> There is support for starved crickets to be using their macromolecules during recovery. Their dry mass decreases post-recovery mass with a higher water content and with a lower lipid content. They appear to be preferntially burning lipid over protein.

@@ -1,0 +1,862 @@
+---
+subtitle: "Potassium and Sodium"
+editor_options: 
+  chunk_output_type: console
+---
+
+# Introduction
+```{r}
+#| include: false
+source("setup.R")
+```
+
+Aim: To determine how crickets ionoregulate during desiccation.
+
+Crickets were placed in incubator in glass fly vials filled with ~1 inch of Drierite separated from the cricket by a cotton ball, stoppered with a sponge bung.
+
+## Hypothesis
+
+H0: Homoeostasis hypothesis: Ion concentration is regulated under desiccating conditions. Potential mechanisms include supplementation of water to maintain haemolymph volume or sequestration of ion to maintain concentration.
+
+H1: No homeostasis hypothesis: Ion concentration increases proportionally with water loss because haemolymph volume decreases.   
+
+## Design
+```{r}
+righty <- read_csv("data/Desiccation 2025/Ions/Potassium/righty_log_from_20251015_to_20251023_.csv")
+names(righty) <- c("Time", "Temp", "RH", "MAC")
+# Temperature
+summary(righty$Temp)
+```
+
+Species: *Acheta domesticus*  
+Time: 0, 3, 6, 18 or 24 (rehydrated) hours. Rehydrated crickets were dried for 18 hours then provided water for 6 hours.  
+Temperature: `r round(mean(righty$Temp), 1)`&deg;C  
+Sex: Male (blue) or Female (orange)
+
+## Variables
+Calculate mass in mg from grams:
+
+  * Start mass: Mass at the start of the experiment
+  * End mass: Mass after desiccation
+  * Rehydrated mass: Mass after rehydration
+  * Dry mass: Mass after drying in a oven at 60 &deg;C for at least 48 hours
+  
+Calculate change in mass between time points:
+
+  * Percentage change in wet mass during desiccation
+  * Percentage change in wet mass from start to end of rehydration
+  
+Calculate body water content from dry mass:
+
+  * Total water content (%): All fluid in body relative to starting mass
+  * Relative water loss (%): Body fluid lost during desiccation. Relative to total water content 
+  
+Calculate water loss rates:
+
+  * Mass change rate (%/h): Percentage rate change during desiccation based on wet mass 
+  * Water loss rate; WLR (%/h): Rate of relative water loss during desiccation 
+  
+```{r}
+# LOAD AND PREPARE
+drying_data_all <- read_excel("data/Desiccation 2025/Ions/IonsData.xlsx")[1:15]
+names(drying_data_all)[11] <- "Ion_conc"
+drying_data_all$Ion <- ifelse(drying_data_all$Ion == "Na+", "Na+", "K+") # Relabel all potassium for consistency
+
+# QUALITY CONTROL
+# Remove poor readings and melanised samples
+drying_data_all <- drying_data_all %>% 
+  filter(`Read quality` != "Poor", 
+         (!`Comment(s)` %in% c("Black","blackened", "Dead before")) %>% replace_na(TRUE)) 
+
+# Calculate average conc across multiple readings for each ID
+drying_data <- drying_data_all %>% 
+  group_by(Ion, Cricket_ID, Sex, Time) %>% 
+  summarise(Ion_conc = mean(Ion_conc)) %>% 
+  ungroup()
+
+# Load mass data
+mass_data <- read_excel("data/Desiccation 2025/Ions/IonsData.xlsx", sheet = "mass") %>% 
+  mutate(Desiccation_time = ifelse(Time == 24, 18, Time))
+# Starting mass
+mass_data$Start_mass <- (mass_data$Start.Cricket - mass_data$Start.Container) * 1000
+# Mass after dehydration
+mass_data$End_mass <- (mass_data$End.Cricket - mass_data$End.Container) * 1000
+# Mass after rehydration
+mass_data$Rehydrated_mass <- (mass_data$Rehydrated.Cricket - mass_data$Rehydrated.Container) * 1000
+
+# Remove outlier sodium females (reasons discussed below)
+mass_data <- filter(mass_data, !Cricket_ID  %in% c(334, 399, 441))
+
+# Calculate wet mass metrics (mg)
+# Relative change in dehydrated mass to starting mass
+mass_data$Percent_change <- ifelse(mass_data$Time == 0, NA, 100 - (mass_data$End_mass / mass_data$Start_mass) * 100)
+# Relative change in rehydrated mass to starting mass
+mass_data$Percent_change_recovery <- ifelse(mass_data$Time == 24, (mass_data$Rehydrated_mass / mass_data$Start_mass) * 100, NA)
+
+# Calculate dry mass metrics
+# Total body water (%)
+mass_data$Total_water_content <- ((mass_data$Start_mass - mass_data$Dry_mass_mg) / mass_data$Start_mass) * 100
+# Water lost during desiccation (%)
+mass_data$Relative_water_loss <- (mass_data$Percent_change /  mass_data$Total_water_content) * 100
+
+# Calculate water loss rates
+mass_data$Mass_change_rate <- ifelse(mass_data$Time == 0, NA, mass_data$Percent_change / mass_data$Desiccation_time) # %/h
+mass_data$WLR <- ifelse(mass_data$Time == 0, NA, mass_data$Relative_water_loss / mass_data$Desiccation_time) # %/h
+
+# Merge and transform data
+drying_data <- left_join(mass_data[,-c(4:9)], drying_data, by = c("Cricket_ID", "Sex", "Time"))
+
+# Extract dead crickets
+# dead_crickets <- filter(drying_data, is.na(Ion_conc))
+
+drying_data <- drying_data %>% 
+  drop_na(Ion_conc) %>% 
+  # Exclude individuals that did not have ion concentration measured
+  mutate(Time_fct = factor(Time, levels = c("0", "3", "6", "18", "24")),
+         log_ion = log10(Ion_conc),
+         log_PC = log10(Percent_change),
+         log_pc_rate  = log10(Mass_change_rate),
+         log_WLR  = log10(WLR)) 
+```
+
+### Cleaning data
+
+Causes of exclusion:
+
+* Death at any time; the time of death is unknown and mass could be overestimated.
+* Dying - tended to have insufficient haemolymph. Alive and responsive but lethargic and with splayed legs indicating muscle issues (hyperkalemia?).
+* Insufficient haemolymph; alive and responsive and not lethargic but haemocoel was empty.
+* Poor quality readings; drifting electrode with no stable reading for 10 seconds
+* Sample heavily melanised. Sodium is sensitive to melanisation (increases). Potassium concentration is stable over time.
+
+K+:
+
+* One male was excluded with >100 mM K^+^, this is a valid datapoint and measured multiple times.
+* Cricket 434 died at the start of the experiment, haemolymph was sampled and frozen and had ions measured but theses are excluded from analysis. [K^+^] was higher than other crickets >100 mM K^+^
+* 201 crickets measured
+
+Na+:
+
+* Cricket 350 was measured with a good read on a dodgy electrode but has abnormally low sodium. Was removed.
+* Cricket 441 was measured with a good read but has abnormally low sodium. Was removed.
+* Cricket 334 was injured in the vial. Leg fell off. Had abnormally high water loss and high sodium. Removed from analysis.
+* Cricket 399 had abnormally high water loss and high sodium. Removed from analysis.
+* 193 crickets measured
+
+Checking distributions:
+
+* K^+^ concentration is right skewed, still right skewed after Log 10 transformation but transformed.
+* Na^+^ concentration is not skewed, Log 10 transformed anyway.
+* Mass percent change is right skewed. Normally distributed after Log 10 transformation.
+* Water loss rate is right skewed. More normally distributed after Log 10 transformation.
+
+***
+
+# Ion concentration
+
+* Overall crickets are good regulators; magnitude of concentration changes are small
+* Sex differences; females have higher concentrations of potassium and similar concentrations of sodium to males
+* Variation around the mean is smaller in sodium. Variation in potassium is high in females. 
+* Potassium does not change with longer desiccation or rehydration
+* Sodium increases in females then returns to baseline levels after rehydration
+* Sodium in males increases then returns to baseline levels after rehydration
+
+**Conclusion:**  
+Haemolymph potassium and sodium is being regulated. Females are better regulators than males. Males appear to under-compensate under short term desiccation; sodium increases at 3 hours but decreases under longer stress.
+
+## Calculate mean and standard error
+```{r}
+mean_ion_conc <- drying_data %>% 
+  group_by(Ion, Sex, Time) %>% 
+  summarise(mean_conc = mean(Ion_conc),
+            se_conc = sd(Ion_conc) / sqrt(n()),
+            range = max(Ion_conc) - min(Ion_conc),
+            n = n())
+```
+
+```{r}
+knitr::kable(mean_ion_conc, digits = 3)
+```
+
+
+## Does ion concentration change over time?
+```{r}
+#| fig-cap: "Potassium concentration (mM) for males (blue) and females (orange) does not increase with longer desiccation. Females have higher potassium concentration than males. Error bars are standard error around the mean."
+
+p_potassium <- ggplot() +
+  geom_point(data = filter(drying_data, Ion == "K+"), aes(Time, Ion_conc, colour = Sex), alpha = 0.6, stroke = NA,
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5)) +
+  geom_point(data = filter(mean_ion_conc, Ion == "K+"), aes(Time, mean_conc, group = Sex, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE,
+             position = position_dodge(0)) +
+  geom_line(data = filter(mean_ion_conc, Ion == "K+"), aes(Time, mean_conc, group = Sex, colour = Sex),
+                position = position_dodge(0), linewidth = 0.5) +
+  geom_errorbar(data = filter(mean_ion_conc, Ion == "K+"), aes(Time, group = Sex, colour = Sex,
+                                      ymin = mean_conc - se_conc, 
+                                      ymax = mean_conc + se_conc), 
+                width = 1, linewidth = 0.5,
+                position = position_dodge(0)) +
+  labs(y = expression("[K"^"+"*"]" ~ ("mmol"%.%"L"^-1))) +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_log10(limits = c(3, 50), breaks = c(5, seq(10, 50, 10)), expand = expansion(mult = c(0, 0))) +
+  scale_x_continuous(name = "Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+
+p_potassium
+```
+
+```{r}
+test <- data.frame(Time = rep(c(0, 3, 6, 18, 24), 2), conc = 215, Sex = c(rep("Male", 5), rep("Female", 5)), pair = c("a", "b", "a", "b", "a", "a", "b", "b", "c", "a"))
+```
+
+
+```{r}
+#| fig-cap: "Sodium concentration (mM) increases over time for males (blue) and females (orange). Concentration returns to baseline levels after rehydration. Error bars are standard error around the mean."
+
+p_sodium <- ggplot() +
+  geom_point(data = filter(drying_data, Ion == "Na+"), aes(Time, Ion_conc, colour = Sex), alpha = 0.6, stroke = NA, 
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1.5)) +
+  geom_point(data = filter(mean_ion_conc, Ion == "Na+"), aes(Time, mean_conc, group = Sex, colour = Sex),
+             size = 2, shape = 1, show.legend = FALSE,
+             position = position_dodge(0)) +
+  geom_line(data = filter(mean_ion_conc, Ion == "Na+"), aes(Time, mean_conc, group = Sex, colour = Sex),
+                position = position_dodge(0), linewidth = 0.5) +
+  geom_errorbar(data = filter(mean_ion_conc, Ion == "Na+"), aes(Time, group = Sex, colour = Sex,
+                                      ymin = mean_conc - se_conc, 
+                                      ymax = mean_conc + se_conc), 
+                width = 1, linewidth = 0.5,
+                position = position_dodge(0)) +
+  labs(y = expression("[Na"^"+"*"]" ~ ("mmol"%.%"L"^-1))) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_log10(limits = c(130, 220), breaks = seq(100, 300, 10), expand = expansion(mult = c(0, 0))) +
+  scale_x_continuous(name ="Time (h)", breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery")) 
+# +  geom_text(data = test, aes(Time, conc, label = pair, colour = Sex), position = position_dodge(width = 1), show.legend = FALSE)
+
+p_sodium
+```
+
+### Stats
+
+Count time as a continuous variable. Use categorical for HSD.
+
+Potassium:
+
+No interaction. 
+
+```{r}
+# Potassium
+drying_data %>% 
+  filter(Ion == "K+") %>%
+  lm(log_ion ~ Time + Sex, .) %>% 
+  anova() %>% 
+  knitr::kable(digits = 3)
+
+drying_data %>% 
+  filter(Ion == "K+") %>%
+  lm(log_ion ~ Time_fct + Sex, .) %>% 
+  anova()
+
+pairs(emmeans(lm(log_ion ~ Time_fct * Sex, filter(drying_data, Ion == "K+")), ~ Time_fct * Sex), simple = "Time_fct", adjust = "Tukey")  
+```
+
+Sodium:
+
+Interaction present.
+
+```{r}
+# Sodium
+drying_data %>% 
+  filter(Ion == "Na+") %>%
+  lm(log_ion ~ Time + Sex, .) %>% 
+  anova() %>% 
+  knitr::kable(digits = 3)
+
+drying_data %>% 
+  filter(Ion == "Na+") %>%
+  lm(log_ion ~ Time_fct * Sex, .) %>% 
+  anova()
+
+pairs(emmeans(lm(log_ion ~ Time_fct * Sex, filter(drying_data, Ion == "Na+")), ~ Time_fct * Sex), simple = "Time_fct", adjust = "Tukey") 
+```
+
+## Does ion concentration change proportionally with mass lost?
+
+H0: If crickets are not maintaining homeostasis, then ion concentration should increase proportionally with water lost during desiccation. Indicating that haemolymph is concentrating in the haemocoel. Slopes should be the same as 1 and different to 0.
+
+H1: If crickets are maintaining homeostasis, then ion concentration should not have a relationship with water lost. Slopes should be similar to 0 or different to 1.
+
+**Conclusion:**  
+Haemolymph potassium is being regulated. Slopes are not different to 0 and different to 1.
+Crickets are not regulating sodium. Slope is different to 0 and different to 1. Thus, sodium concentration is not proportional to amount of water lost during desiccation.
+
+### Potassium:
+```{r}
+# Potassium equation
+# Interaction term non-significant, dropped from model.
+Kmass_data <- drying_data %>% 
+  filter(Ion == "K+",
+         !Time %in% c("0", "24")) %>% 
+  mutate(ln_waterloss = log(Relative_water_loss),
+         ln_ion = log(Ion_conc))
+
+Kmass_mod <- lm(ln_ion ~ ln_waterloss, Kmass_data)
+summary(Kmass_mod)
+
+summary(lm((ln_ion-ln_waterloss) ~ ln_waterloss, Kmass_data)) # Slope is non-significant
+```
+
+```{r}
+#| fig-cap: "Potassium concentration (mM) against relative water loss (%). Females are orange. Males are blue. Potassium concentration is independent of mass lost for both sexes."
+#| 
+p_KWL <- ggplot() +
+  geom_point(data = drying_data[!drying_data$Time %in% c("0", "24") & drying_data$Ion == "K+",], aes(Relative_water_loss, Ion_conc, colour = Sex), alpha = 0.6) +
+  geom_abline(colour = "black", linewidth = 1, slope = coef(Kmass_mod)[2], intercept = coef(Kmass_mod)[1]) +
+  labs(y = expression("[K"^"+"*"]" ~ ("mmol"%.%"L"^-1)),
+       x = "Water lost (%)") +
+  scale_y_continuous(trans = "log", limits = c(3, 50), breaks = c(5, seq(0, 150, 10)), expand = expansion(mult = c(0, 0))) +
+  scale_x_continuous(trans = "log", limits = c(1, 40), expand = expansion(mult = c(0.0, 0)), labels = function(x) round(x, 2)) +
+  scale_colour_manual(values = sex_pal) 
+
+p_KWL
+```
+
+### Sodium:
+Slope is not equal to 1 but different to 0.
+```{r}
+Namass_data <- drying_data %>% 
+  filter(Ion == "Na+",
+         !Time %in% c("0", "24")) %>% 
+  mutate(ln_waterloss = log(Relative_water_loss),
+         ln_ion = log(Ion_conc))
+
+Namass_mod <- lm(ln_ion ~ ln_waterloss, Namass_data)
+summary(Namass_mod)
+
+summary(lm((ln_ion-ln_waterloss) ~ ln_waterloss, Namass_data)) # Slope is non-significant
+
+emtrends(Namass_mod, ~1, var = "ln_waterloss") %>% 
+  test(., null = 1)
+```
+
+```{r}
+#| fig-cap: "Sodium concentration (mM) against relative water loss (%). Females are orange. Males are blue. Both sexes increase sodium concentration with increasing water loss. "
+#| 
+p_NaWL <- ggplot() +
+  geom_point(data = drying_data[!drying_data$Time %in% c("0", "24") & drying_data$Ion == "Na+",], aes(Relative_water_loss, Ion_conc, colour = Sex), alpha = 0.6) +
+  geom_abline(colour = "black", linewidth = 1, slope = coef(Namass_mod)[2], intercept = coef(Namass_mod)[1]) +
+  labs(y = expression("[Na"^"+"*"]" ~ ("mmol"%.%"L"^-1)),
+       x = "Water lost (%)") +
+  scale_x_continuous(trans = "log", limits = c(1, 40), expand = expansion(mult = c(0.0, 0)), labels = function(x) round(x, 2)) +
+  scale_y_continuous(trans = "log", limits = c(130, 220), breaks = seq(100, 300, 10), expand = expansion(mult = c(0, 0))) + 
+  scale_colour_manual(values = sex_pal) 
+p_NaWL
+
+```
+
+***
+
+# Relative change during desiccation
+
+Mass lost is not expected to be linear because osmotic pressure will cause water to be increasingly harder to lose. Therefore, data was analysed assuming a power function and time and mass lost are log transformed.
+
+
+```{r}
+# Percentage change (wet mass)
+mean_pc_loss <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  group_by(Sex, Desiccation_time) %>% 
+  distinct(Cricket_ID, Percent_change, Sex, Desiccation_time) %>% 
+  summarise(mean_pc = mean(Percent_change),
+            se_pc = sd(Percent_change) / sqrt(n()),
+            range = max(Percent_change) - min(Percent_change),
+            n = n()) 
+
+knitr::kable(mean_pc_loss, digits = 3)
+```
+
+There was no interaction between sex and time so the interaction term was dropped from the model.
+
+```{r}
+PC_mod <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  distinct(Cricket_ID, Percent_change, Sex, Desiccation_time) %>% 
+  lm(log(Percent_change) ~ log(Desiccation_time) + Sex, .) 
+
+PC_fit <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  distinct(Cricket_ID, Percent_change, Sex, Desiccation_time) %>% 
+  select(Desiccation_time, Sex) %>% 
+  cbind(., exp(predict(PC_mod, newdata = ., interval = "prediction")))
+
+summary(PC_mod)
+```
+
+```{r}
+#| fig-cap: "Wet mass lost (%) of female (orange) and male (blue) crickets during desiccation. Data from potassium and sodium are pooled. Lines are a fitted power function. Males lose more mass than females at all time points. Error bars are standard error around the mean."
+
+p_wetmass <- ggplot() +
+  geom_point(data = drying_data %>% 
+               filter(!Time %in% c("0")), aes(Desiccation_time, Percent_change, colour = Sex), alpha = 0.6, 
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 0.5)) +
+  geom_point(data = mean_pc_loss, aes(Desiccation_time, mean_pc, colour = Sex), 
+              size = 2, shape = 16,
+             position = position_dodge(1)) +
+  geom_errorbar(data = mean_pc_loss, aes(Desiccation_time, colour = Sex,
+                                            ymin = mean_pc - se_pc,
+                                            ymax = mean_pc + se_pc),
+                width = 1, linewidth = 1,
+             position = position_dodge(1)) +
+  geom_line(data = PC_fit, aes(Desiccation_time, fit, colour = Sex), linewidth = 1) +
+  labs(y = "Wet mass lost (%)",
+       x = "Desiccation time (h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_continuous(limits = c(0, 30), breaks = seq(0, 35, 5), expand = expansion(mult = c(0.0, 0))) +
+  scale_x_continuous(breaks = c(0, 3, 6, 18))
+
+p_wetmass
+```
+
+## Mass loss rate
+```{r}
+# Mass loss rate (wet mass)
+mean_pc_rate <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  group_by(Sex, Desiccation_time) %>%
+  distinct(Cricket_ID, Mass_change_rate, Sex, Desiccation_time) %>% 
+  summarise(mean_pc_rate = mean(Mass_change_rate),
+            se_pc_rate = sd(Mass_change_rate) / sqrt(n()),
+            range = max(Mass_change_rate) - min(Mass_change_rate),
+            n = n())
+
+knitr::kable(mean_pc_rate, digits = 3)
+```
+
+```{r}
+pc_rate_mod <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  distinct(Cricket_ID, log_pc_rate, Sex, Desiccation_time) %>% 
+  lm(log_pc_rate ~ Desiccation_time + Sex, .) 
+# Interaction dropped
+
+pc_rate_fit <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  distinct(Cricket_ID, log_pc_rate, Sex, Desiccation_time) %>% 
+  select(Desiccation_time, Sex) %>% 
+  cbind(., 10^(predict(pc_rate_mod, newdata = ., interval="prediction")))
+
+summary(pc_rate_mod)
+
+pairs(emmeans(lm(log_pc_rate ~ as.factor(Desiccation_time) * Sex, filter(drying_data, Time != "0") %>% distinct(Cricket_ID, log_pc_rate, Sex, Desiccation_time)), ~ as.factor(Desiccation_time) * Sex), adjust = "Tukey")
+```
+
+```{r}
+#| fig-cap: "Rates of mass loss of female (orange) and male (blue) crickets (%/h). Error bars are standard error around the mean."
+#| 
+p_pc_rate <- ggplot() +
+  geom_point(data = drying_data %>% 
+               filter(!Time %in% c("0")), aes(Desiccation_time, Mass_change_rate, colour = Sex), alpha = 0.6,
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 0.5)) +
+  geom_point(data = mean_pc_rate, aes(Desiccation_time, mean_pc_rate, colour = Sex), 
+              size = 2, shape = 16,
+             position = position_dodge(1), show.legend = FALSE) +
+  geom_errorbar(data = mean_pc_rate, aes(Desiccation_time, colour = Sex,
+                                            ymin = mean_pc_rate - se_pc_rate, 
+                                            ymax = mean_pc_rate + se_pc_rate), 
+                width = 1, linewidth = 1,
+             position = position_dodge(1)) +
+  geom_line(data = pc_rate_fit, aes(Desiccation_time, fit, colour = Sex), linewidth = 1) +
+  labs(y = expression("Mass loss rate " ~ ("% wet mass "%.%"h"^-1)),
+       x = "Desiccation time (h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_continuous(limits = c(0, 3), breaks = seq(0, 3.5, 0.5), expand = expansion(mult = c(0.0, 0))) +
+  scale_x_continuous(breaks = c(0, 3, 6, 18))
+
+p_pc_rate
+```
+
+# Water loss
+```{r}
+# Percentage change (water content)
+mean_water_loss <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  group_by(Sex, Desiccation_time) %>% 
+  distinct(Cricket_ID, Relative_water_loss, Sex, Desiccation_time) %>% 
+  summarise(mean_wl = mean(Relative_water_loss),
+            se_pc = sd(Relative_water_loss) / sqrt(n()),
+            range = max(Relative_water_loss) - min(Relative_water_loss),
+            n = n()) 
+knitr::kable(mean_water_loss, digits = 3)
+```
+
+```{r}
+WL_mod <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  distinct(Cricket_ID, Relative_water_loss, Sex, Desiccation_time) %>% 
+  lm(log(Relative_water_loss) ~ log(Desiccation_time) + Sex, .) 
+# Interaction dropped
+
+WL_fit <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  distinct(Cricket_ID, Relative_water_loss, Sex, Desiccation_time) %>% 
+  select(Desiccation_time, Sex) %>% 
+  cbind(., exp(predict(WL_mod, newdata = ., interval = "prediction")))
+
+summary(WL_mod)
+```
+
+```{r}
+#| fig-cap: "Wet mass lost during desiccation (%) for female (orange) and male (blue) crickets. Data from potassium and sodium are pooled. Lines are a fitted power function. Males lose more mass than females at during long desiccations but not short ones. Error bars are standard error around the mean."
+
+p_water_loss <- ggplot() +
+  geom_point(data = drying_data %>% 
+               filter(!Time %in% c("0")) %>% distinct(Desiccation_time, Sex, Relative_water_loss), aes(Desiccation_time, Relative_water_loss, colour = Sex), alpha = 0.6, 
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 0.5)) +  
+  geom_point(data = mean_water_loss, aes(Desiccation_time, mean_wl, colour = Sex), 
+              size = 2, shape = 16,
+             position = position_dodge(1)) +  
+  geom_errorbar(data = mean_water_loss, aes(Desiccation_time, colour = Sex,
+                                         ymin = mean_wl - se_pc,
+                                         ymax = mean_wl + se_pc),
+                width = 1, linewidth = 1,
+                position = position_dodge(1)) +
+  geom_line(data = WL_fit, aes(Desiccation_time, fit, colour = Sex), linewidth = 1) +
+  labs(y = "Relative water loss (%)",
+       x = "Desiccation time (h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_continuous(limits = c(0, 40), breaks = seq(0, 50, 10), expand = expansion(mult = c(0.0, 0))) +
+  scale_x_continuous(breaks = c(0, 3, 6, 18))
+
+p_water_loss
+```
+
+## Water loss rates
+
+```{r}
+# Water loss rate (relative water content)
+mean_WLR <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  drop_na(Dry_mass_mg) %>% 
+  group_by(Sex, Desiccation_time) %>%
+  distinct(Cricket_ID, WLR, Sex, Desiccation_time) %>% 
+  summarise(mean_WLR = mean(WLR),
+            se_WLR = sd(WLR) / sqrt(n()),
+            range = max(WLR) - min(WLR),
+            n = n())
+
+knitr::kable(mean_WLR, digits = 3)
+```
+
+```{r}
+WLR_mod <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  distinct(Cricket_ID, log_WLR, Sex, Desiccation_time) %>% 
+  lm(log_WLR ~ Desiccation_time + Sex, .) 
+# Interaction dropped
+
+WLR_fit <- drying_data %>% 
+  filter(!Time %in% c("0")) %>% 
+  distinct(Cricket_ID, log_WLR, Sex, Desiccation_time) %>% 
+  select(Desiccation_time, Sex) %>% 
+  cbind(., 10^(predict(WLR_mod, newdata = ., interval="prediction")))
+
+summary(WLR_mod)
+
+pairs(emmeans(lm(log_WLR ~ as.factor(Desiccation_time) * Sex, filter(drying_data, Time != "0") %>% distinct(Cricket_ID, log_WLR, Sex, Desiccation_time)), ~ as.factor(Desiccation_time) * Sex), adjust = "Tukey")
+```
+
+```{r}
+#| fig-cap: "Water loss rates relative to total water content (%/h). Females are orange. Males are blue. Error bars are standard error around the mean."
+
+p_WLR <- ggplot() +
+  geom_point(data = drying_data[!drying_data$Time %in% c("0"),] %>% distinct(Cricket_ID, WLR, Sex, Desiccation_time), aes(Desiccation_time, WLR, colour = Sex), alpha = 0.6,
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 0.5)) +
+   geom_point(data = mean_WLR, aes(Desiccation_time, mean_WLR, colour = Sex), 
+              size = 2, shape = 16,
+             position = position_dodge(1), show.legend = FALSE) +
+  geom_errorbar(data = mean_WLR, aes(Desiccation_time, colour = Sex,
+                                            ymin = mean_WLR - se_WLR, 
+                                            ymax = mean_WLR + se_WLR), 
+                width = 1, linewidth = 1,
+             position = position_dodge(1)) +
+  geom_line(data = WLR_fit, aes(Desiccation_time, fit, colour = Sex), linewidth = 1) +
+  labs(y = expression("     Water loss rate\n(% water content"%.%"h"^-1~")"),
+       x = "Desiccation time (h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_y_continuous(limits = c(0, 4), breaks = seq(0, 5, 0.5), expand = expansion(mult = c(0.0, 0))) +
+  scale_x_continuous(breaks = c(3, 6, 18)) +
+  theme(axis.title = element_text(hjust = 0.5),
+        plot.margin = margin(t = 6, l = 15, unit = "pt"))
+
+p_WLR
+```
+
+## Percentage change in mass
+
+18 hours of desiccation is borderline where mortality occurs. Individuals that lose more than 30% of their starting mass are dead or dying. This is more likely in males than females and appears random in males; males of all sizes can lose extreme body mass. Fewer occurrences in females but those that did were smaller females.
+
+## Rehydration
+```{r}
+#| fig-cap: "Change in mass (%) of crickets before and after desiccation and rehydration relative to their starting mass."
+
+rehydration_ions <- mass_data %>% 
+  filter(Time == 24,
+         Survival == 1) %>% 
+  select(Cricket_ID, Sex, Percent_change, Percent_change_recovery) %>% 
+  mutate(Start_Percent = 100,
+         Percent_change = 100 - Percent_change) %>% 
+  pivot_longer(contains("Percent"), names_to = "Timepoint", values_to = "Change") %>% 
+  mutate(Experiment = "Ions", 
+         Time_treatment = "24_starved",
+         Timepoint = factor(Timepoint, levels = c("Start_Percent", "Percent_change", "Percent_change_recovery"))) 
+
+ggplot(rehydration_ions, aes(Timepoint, Change, group = Cricket_ID)) +
+  geom_hline(yintercept = 100, linetype = 2) +
+  geom_line(linewidth = 1, alpha = 0.6) +
+  theme(legend.position = "right",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Relative mass change (%)") +
+  scale_y_continuous(breaks = seq(0, 120, 5), limits = c(70, 105), expand = c(0, 0)) +
+  scale_x_discrete(name = "Time point", labels = c("Pre-desiccation", "Post-desiccation", "Post-recovery")) +
+  facet_grid(~Sex)
+
+save(mass_data, drying_data, rehydration_ions, file = "data/Desiccation 2025/ions.Rdata")
+```
+
+## Survival curve
+
+Losses of 45% are lethal.
+
+```{r}
+#| fig-cap: "How much relative water loss (%) can a cricket tolerate before increasing the risk of mortality?"
+#| fig-height: 5
+surv_mod <- glm(Survival ~ Relative_water_loss, mass_data, family = "binomial")
+surv_fit <- data.frame(Relative_water_loss = seq(0, max(mass_data$Relative_water_loss, na.rm = TRUE)), Survival = predict(surv_mod, newdata = data.frame(Relative_water_loss = seq(0, max(mass_data$Relative_water_loss, na.rm = TRUE))), type = "response"))
+
+log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2]
+
+surv_plot <- ggplot(mass_data, aes(Relative_water_loss, Survival), mass_data) +
+  geom_point() +
+  geom_line(data = surv_fit, aes(Relative_water_loss, Survival)) +
+  annotate(x = log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2],
+           y = 0, yend = 0.5, geom = "segment", linetype = 2) +
+  annotate(xend = log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2],
+           x = 0, y = 0.5, geom = "segment", linetype = 2) +
+  scale_x_continuous(limits = c(0, 80), expand = c(0, 0)) +
+  theme(plot.margin = margin(t = 6, r = 10, b = 6, l = 6, unit = "pt")) +
+  labs(y = "Probability of survival",
+       x = "Relative water loss (%)") 
+  
+surv_plot
+
+ggsave(surv_plot, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/ion_survival.png")
+```
+
+# Total water content
+
+Males have a higher water content than females. Females lose proportionally less water than males.
+
+```{r}
+drying_data %>% 
+  distinct(Cricket_ID, Total_water_content, Sex) %>% 
+  group_by(Sex) %>% 
+  summarise(mean = mean(Total_water_content),
+            se = sd(Total_water_content)/sqrt(n())) %>% 
+  knitr::kable()
+
+drying_data %>% 
+  distinct(Cricket_ID, Total_water_content, Sex) %>% 
+  t.test(Total_water_content ~ Sex, .)
+```
+
+Checking the correlation between wet mass lost and water lost. There is a tight correlation between mass and water loss.
+
+```{r}
+#| fig-cap: "Correlation between mass loss and water loss. Colour is time: 3 (red), 6 (green) & 18 hours (blue)."
+ 
+ggplot() +
+  geom_point(data = drying_data[drying_data$Time != "0",], aes(Percent_change, Relative_water_loss, colour = factor(Desiccation_time), shape = Sex)) +
+  scale_y_continuous(limits = c(0, 40), breaks = seq(-10, 100, 10), expand = expansion(mult = c(0, 0))) +
+  scale_x_continuous(limits = c(0, 40), breaks = seq(-50, 100, 10), expand = expansion(mult = c(0, 0))) +
+  geom_abline(intercept = 0, slope = 1, linetype = 2) +
+  labs(x = "Change in wet mass (%)",
+       y = "Change in water content (%)") +
+  scale_shape_manual(values = sex_point) +
+  theme(legend.position = "bottom")
+
+ drying_data[drying_data$Time != "0",] %>% 
+   lm(WLR ~ Percent_change + Sex,. ) %>% 
+   summary()
+```
+
+
+```{r}
+#| fig-cap: "Water loss rate (%/h) is lower in larger individuals. Males have a higher water loss rate than females."
+ 
+ggplot() +
+  geom_point(data = drying_data[drying_data$Time != "0",], aes(Start_mass, WLR, colour = factor(Desiccation_time), shape = Sex)) +
+  scale_y_continuous(limits = c(0, 4), breaks = seq(-10, 100, 1), expand = expansion(mult = c(00, 0))) +
+  scale_x_continuous(limits = c(150, 900), breaks = seq(150, 900, 100), expand = expansion(mult = c(0, 0))) +
+  labs(x = "Starting mass (mg)",
+       y = "Water loss rate (%/h)") +
+  scale_shape_manual(values = sex_point) +
+  theme(legend.position = "bottom")
+
+ drying_data[drying_data$Time != "0",] %>% 
+   lm(WLR ~ Start_mass + Sex,. ) %>% 
+   summary()
+```
+
+Dry mass does not change within 18h, increases after recovery.
+
+```{r}
+ggplot() +
+  geom_point(data = drying_data, aes(Time, Dry_mass_mg, colour = Sex), alpha = 0.6,
+             position = position_jitterdodge(jitter.height = 0, jitter.width = 0.1, dodge = 1)) +
+  labs(y = "Dry mass (mg)",
+       x = "Time (h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  scale_x_continuous(breaks = c(0, 3, 6, 18, 24), labels = c("0", "3", "6", "18", "18 h + \n6 h recovery"))
+
+anova(lm(Dry_mass_mg ~ Time + Sex, drying_data[drying_data$Time != "24",]))
+```
+
+
+```{r}
+#| fig-cap: "Correlation between water loss rate and wet mass loss rate."
+ 
+ggplot() +
+  geom_point(data = drying_data[drying_data$Time != "0",], aes(Mass_change_rate, WLR, colour = Sex, shape = Sex)) +
+  scale_y_continuous(limits = c(0, 4), breaks = seq(-10, 100, 1), expand = expansion(mult = c(0, 0))) +
+  scale_x_continuous(limits = c(0, 4), breaks = seq(-50, 100, 1), expand = expansion(mult = c(00, 0))) +
+  geom_abline(intercept = 0, slope = 1, linetype = 2) +
+  labs(x = "Wet mass loss rate (%/h)",
+       y = "Water loss rate (%/h)") +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal) +
+  theme(legend.position = "bottom")
+
+ drying_data[drying_data$Time != "0",] %>% 
+   lm(WLR ~ Mass_change_rate + Sex,. ) %>% 
+   summary()
+```
+
+
+```{r}
+#| fig-cap: "Correlation between starting mass and dry mass. Colour is time: 3 (green), 6 (blue) & 18 hours (purple)."
+#| 
+ggplot() +
+  geom_point(data = drying_data, aes(Start_mass, Dry_mass_mg, colour = factor(Desiccation_time), shape = Sex)) +
+  scale_x_continuous(limits = c(150, 900), breaks = seq(150, 900, 50), expand = expansion(mult = c(00, 0))) +
+  scale_y_continuous(limits = c(0, 350), breaks = seq(0, 350, 50), expand = expansion(mult = c(00, 0))) +
+  labs(x = "Starting mass (mg)",
+       y = "Dry mass (mg)") +
+  scale_shape_manual(values = sex_point)  +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+#| fig-cap: "Correlation between starting mass and total water content. Colour is time: 3 (green), 6 (blue) & 18 hours (purple)."
+ggplot() +
+  geom_point(data = drying_data, aes(Start_mass, Total_water_content, colour = factor(Desiccation_time), shape = Sex)) +
+  scale_x_continuous(limits = c(150, 800), breaks = seq(150, 800, 50), expand = expansion(mult = c(00, 0))) +
+  scale_y_continuous(limits = c(50, 100), breaks = seq(0, 300, 10), expand = expansion(mult = c(00, 0))) +
+  labs(x = "Starting mass (mg)",
+       y = "Total water content (%)") +
+  scale_shape_manual(values = sex_point) 
+```
+
+# Testing null hypothesis of concentrating
+
+Only three data points so the stats has low power and shows slopes are not different to null.
+```{r}
+mean_pc_loss2 <- drying_data %>% 
+  filter(Time != "0") %>% 
+  group_by(Sex, Time, Ion) %>% 
+  summarise(mean_wl = mean(Relative_water_loss)) 
+
+mean_ion_conc2 <- mean_ion_conc %>% 
+  group_by(Ion, Sex) %>% 
+  mutate(ion_diff = (mean_conc/mean_conc[1] - 1) * 100) %>% 
+  left_join(., mean_pc_loss2, by = c("Sex", "Time", "Ion")) %>% 
+  filter(Time != "0") %>% 
+  mutate(Sex = factor(Sex, levels = c("Female", "Male")))
+
+ggplot(mean_ion_conc2, aes(mean_wl, ion_diff, colour = Sex, shape = Sex)) +
+  geom_smooth(method = "lm", se = FALSE, aes(linetype = Ion)) +
+  geom_point() +
+  geom_hline(yintercept = 0) +
+  geom_abline(intercept = 0, slope = 1) +
+theme(legend.position = "bottom" ) +
+  scale_shape_manual(values = sex_point) +
+  scale_colour_manual(values = sex_pal)
+
+ionmass_mod <- lm(ion_diff ~ Ion * mean_wl * Sex, mean_ion_conc2)
+summary(ionmass_mod)
+slopes <- emtrends(ionmass_mod, ~ Ion|Sex, var = "mean_wl")
+summary(slopes, infer = c(TRUE, TRUE), null = 0)
+
+# Difference from 1
+summary(lm(ion_diff ~ mean_wl * Sex, offset = mean_wl, mean_ion_conc2[mean_ion_conc2$Ion == "K+",]))
+# Difference from 0
+summary(lm(ion_diff ~ mean_wl * Sex , mean_ion_conc2[mean_ion_conc2$Ion == "Na+",]))
+```
+
+# Conclusions
+
+ * Initial hypothesis is supported in females: haemolymph ion concentration increases proportionally to mass lost.
+ * Support for the non-homeostasis hypothesis in females for sodium
+ * Support for the homeostasis hypothesis for potassium and in males for sodium
+ 
+# Publication figures
+```{r}
+#| eval: true
+#| include: false
+
+load("data/Desiccation 2025/figures/p_volume.rdata")
+
+# ggsave(p_sodium, dpi = 300, width = single_width, units = "mm", height = single_width, filename = "data/Desiccation 2025/figures/sodium.png")
+# ggsave(p_potassium, dpi = 300, width = ppt_width, units = "mm", height = ppt_height, filename = "data/Desiccation 2025/figures/potassium.png")
+
+# Ion concentration
+p_ions <- p_volume / p_sodium / p_potassium +
+  plot_layout(axis_titles = "collect", guides = "collect") &
+  plot_annotation(tag_levels = 'A') 
+
+ggsave(p_ions, dpi = 300, width = single_width, units = "mm", height = 170, filename = "data/Desiccation 2025/figures/Fig2ion_con.png")
+
+p_ionmass <- p_KWL +
+  p_NaWL +
+  plot_layout(axis_titles = "collect" , guides =
+                "collect") +
+  plot_annotation(tag_levels = 'A') &
+  theme(legend.position = "bottom", legend.title.position = "left")
+ggsave(p_ionmass, dpi = 300, width = double_width, units = "mm", height = single_height, filename = "data/Desiccation 2025/figures/FigS1ion_mass.png")
+
+# # Wet mass
+# p_mass <- p_wetmass +
+#   p_pc_rate +
+#   plot_layout(axis_titles = "collect" , guides = 
+#                 "collect") +
+#   plot_annotation(tag_levels = 'A') &
+#   theme(legend.position = "bottom", legend.title.position = "left") 
+# # ggsave(p_mass, dpi = 300, width = 140, units = "mm", height = 70, filename = "data/Desiccation 2025/figures/mass.png")
+# 
+# # Water loss
+# p_PC_WLR <- p_water_loss +
+#   p_WLR +
+#   plot_layout(axis_titles = "collect" , guides = 
+#                 "collect") +
+#   plot_annotation(tag_levels = 'A') &
+#   theme(legend.position = "bottom", legend.title.position = "left") 
+# # ggsave(p_PC_WLR, dpi = 300, width = 140, units = "mm", height = 70, filename = "data/Desiccation 2025/figures/WLR.png")
+# 
+# p_all_ion <- (p_ions & theme(legend.position = "bottom") | p_ionmass & theme(legend.position = "none") | (p_water_loss + theme(legend.position = "none")) / (p_WLR + theme(legend.position = "none")))  + plot_annotation(tag_levels = 'A') 
+# 
+# ggsave(p_all_ion, dpi = 300, width = 360, units = "mm", height = 240, filename = "data/Desiccation 2025/figures/all_ions.png")
+```
+
