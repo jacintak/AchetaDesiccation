@@ -414,12 +414,6 @@ save(p_diff_water, file = "data/Desiccation 2025/figures/p_diffwater.rdata")
 
 ## Stats: Tissue water content
 
- * Strong sex differences: Females have more tissue mass than males. 
- * Proportion of water in tissue mass increases after rehydration. Losing tissue? Rather than over rehydrating.
- * No change within 3-6 hours.
- * Consistent effect of starvation:
-     * Fed crickets were the same as the other time points.
-     * Starved crickets had lighter dry mass, so has proportionally more water.
  
 ```{r}
 tissue_mod <- lm((Tissue_water/Whole_animal_wet_mass) ~ Time_treatment * Sex, tissue_data) 
@@ -456,10 +450,35 @@ pairs(emmeans(lm(diff_haem ~ Time_treatment, tissue_data), ~ Time_treatment), ad
 ```
 
 # Are crickets losing tissue mass?
+## Correlation with initial mass
+```{r}
+mass_cor <- lm(Tissue_dry_mass ~ Start_mass * Sex, tissue_data)
+summary(mass_cor)
+tissue_data$fit <- predict(mass_cor)
+
+p_mass_cor <- ggplot(tissue_data, aes(Start_mass, Tissue_dry_mass, colour = Time_treatment, shape = Sex)) +
+  geom_point() +
+  geom_line(data = tissue_data, aes(Start_mass, fit, linetype = "Sex"), colour = "black", show.legend = F, linewidth = 0.5) + 
+  scale_x_continuous(name = "Initial mass (mg)", expand = c(0,0), limits = c(200, 1000), breaks = seq(200,1000,  100)) +
+  scale_y_continuous(name = "Dried tissue mass (mg)", expand = c(0,0), limits = c(0, 400), breaks = seq(0,1000,  100)) +
+  scale_shape_manual(values = c(16, 17)) +
+  scale_color_manual(name = "Time", values = c("#c7e9b4",
+                                               "#7fcdbb",
+"#41b6c4",
+"#2c7fb8",
+"grey",
+"#253494"), labels = c("0", "3", "6", "18", "Fed recovery", "Starved recovery")) +
+  theme(legend.position = "right", legend.title.position = "top",
+        plot.margin = margin(t = 5, r = 0, b = 0, l = 0, unit = "pt"))
+  
+p_mass_cor
+
+ggsave(p_mass_cor, dpi = 300, width = double_width, units = "mm", height = single_height, filename = "data/Desiccation 2025/figures/fS2masscor.png")
+```
 
 Indicating that they are using fat stores or breaking down muscle.
 
-There is a strong starting mass effect (probably a cohort effect) so tissue dry mass is reported as a ratio of starting mass.
+There is a strong starting mass effect (probably a cohort effect).
 
 ```{r}
 mean_tissue_dry <- tissue_data %>% 

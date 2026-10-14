@@ -16,6 +16,30 @@ load("data/Desiccation 2025/tissue.Rdata")
 load("data/Desiccation 2025/guts.Rdata")
 ```
 
+This code analyses mass and water loss during desiccation. Control crickets (0h) are excluded from analysis. Recovery crickets are included using their post-desiccation mass (18h).
+
+Calculate mass in mg from grams:
+
+  * Initial mass: Mass at the start of the experiment
+  * End mass: Mass after desiccation; post-desiccation mass
+  * Rehydrated mass: Mass after rehydration
+  * Dry mass: Mass after drying in a oven at 60 &deg;C for at least 48 hours
+  
+Calculate change in mass between time points:
+
+  * Percentage change in mass during desiccation
+  * Percentage change in mass from start to end of rehydration
+  
+Calculate body water content from dry mass:
+
+  * Total water content (mg): All fluid in body, body water
+  * Relative water loss (%): Body fluid lost during desiccation. Relative to total water content 
+
+Figures included for publication:
+
+* Figure 1A: Mass lost during desiccation  
+* Figure 1B: Water loss during desiccation
+
 # Merge data
 
 Total of 713 crickets across all experiments. Removed control crickets.
@@ -23,31 +47,31 @@ Total of 713 crickets across all experiments. Removed control crickets.
 580 crickets (non-control): 273 Females and 270 Males
 
 ```{r}
-volume_data <- samples %>% select(Cricket_ID, Sex, Time, Percent_change, Total_water_content, Relative_water_loss, Mass_change_rate) %>% 
+volume_data <- samples %>% select(Cricket_ID, Sex, Time, Start_mass, Percent_change, Relative_water_loss, Body_water, Lost_water) %>%
   mutate(Experiment = "Haem_vol")
 
 ion_data <- drying_data %>% distinct(Cricket_ID, .keep_all = TRUE) %>% 
-  select(Cricket_ID, Sex, Time, Percent_change, Total_water_content, Relative_water_loss, Mass_change_rate) %>% 
+  select(Cricket_ID, Sex, Time, Start_mass, Percent_change, Relative_water_loss, Body_water, Lost_water) %>% 
   mutate(Experiment = "Ions")
 
-tissue_data <- tissue_data %>% select(Cricket_ID, Sex, Time, Percent_change, Total_water_content, Relative_water_loss, Mass_change_rate) %>% 
+tissue_data <- tissue_data %>% select(Cricket_ID, Sex, Time, Start_mass, Percent_change, Relative_water_loss, Body_water, Lost_water) %>% 
   mutate(Experiment = "Tissues")
 
-gg_data <- gg_data %>% select(Cricket_ID, Sex, Time, Percent_change, Total_water_content, Relative_water_loss, Mass_change_rate) %>% 
+gg_data <- gg_data %>% select(Cricket_ID, Sex, Time, Start_mass, Percent_change, Relative_water_loss, Body_water, Lost_water) %>% 
   mutate(Experiment = "GutsGonads")
-
 
 water_data <- rbind(volume_data, ion_data, tissue_data, gg_data) %>% 
   filter(Time != 0) %>% 
   mutate(Desiccation_time = ifelse(Time == 24, 18, Time),
          Cricket_ID = paste(Cricket_ID, Experiment, sep = "_"),
+         Body_water_pc = (Body_water / Start_mass) * 100,
          WLR = Relative_water_loss / Desiccation_time)
 
 water_data %>% 
   group_by(Sex) %>% 
-  summarise(mean = mean(Total_water_content),
+  summarise(mean = mean(Body_water_pc),
           n = n(),
-          sd = sd(Total_water_content),
+          sd = sd(Body_water_pc),
           se = sd/sqrt(n))
 ```
 
@@ -116,6 +140,7 @@ ggsave(p_wetmass,
 # Water loss
 
  * No interaction
+ * Keep same model structure as percentage change in mass
  
 ```{r}
 WL_mod <- water_data %>% 
@@ -228,32 +253,6 @@ ggsave(p_WLR,
        filename = "data/Desiccation 2025/figures/WLR_plot.png")
 ```
 
-# Survival 
-
-Use ion data only because there was more mortality.
-
-```{r}
-filter(mass_data, Time != 0) %>% 
-  group_by(Survival) %>% 
-  summarise(n = n())
-
-surv_mod <- glm(Survival ~ Relative_water_loss, filter(mass_data, Time != 0), family = "binomial")
-surv_fit <- data.frame(Relative_water_loss = seq(0, max(mass_data$Relative_water_loss, na.rm = TRUE)), Survival = predict(surv_mod, newdata = data.frame(Relative_water_loss = seq(0, max(mass_data$Relative_water_loss, na.rm = TRUE))), type = "response"))
-
-log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2]
-
-ggplot(filter(mass_data, Time != 0), aes(Relative_water_loss, Survival)) +
-  geom_point() +
-  geom_line(data = surv_fit, aes(Relative_water_loss, Survival)) +
-  annotate(x = log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2],
-           y = 0, yend = 0.5, geom = "segment", linetype = 2) +
-  annotate(xend = log(0.5/(1-0.5)) - coef(surv_mod)[1] /coef(surv_mod)[2],
-           x = 0, y = 0.5, geom = "segment", linetype = 2) +
-  scale_x_continuous(limits = c(0, 80), expand = c(0, 0)) +
-  labs(y = "Probability of survival",
-       x = "Relative water loss (%)")
-```
-
 ***
 
 # Recovery
@@ -274,6 +273,7 @@ rehydration_plot <- ggplot(all_rehydration, aes(Timepoint, Change, group = Crick
   scale_x_discrete(name = "Time point", labels = c("Pre-desiccation", "Post-desiccation", "Post-recovery")) +
   facet_grid(~Sex) +
   theme(legend.position = "right",
+        legend.title.position = "top",
         axis.text.x = element_text(angle = 45, hjust = 1)) +
   scale_alpha_manual(name = "Feeding state", values = c(1, 0.3), label = c("Fed", "Starved")) +
   scale_color_manual(name = "Feeding state", values = c("#298c8c", "#f1a226"), label = c("Fed", "Starved"))
@@ -281,24 +281,20 @@ rehydration_plot <- ggplot(all_rehydration, aes(Timepoint, Change, group = Crick
 rehydration_plot
 
 all_rehydration %>% 
-  group_by(Timepoint) %>% 
+  group_by(Timepoint, Sex) %>% 
   summarise(mean = mean(Change),
             n = n(),
             se = sd(Change)/sqrt(n))
 
 ggsave(rehydration_plot, 
        dpi = 300, width = double_width, 
-       units = "mm", height = double_height, 
+       units = "mm", height = single_height, 
        filename = "data/Desiccation 2025/figures/rehydration.png")
 ```
 
 ## Recovery stats
 
 ```{r}
-rm_mod <- aov(Change ~  Timepoint + Error(Cricket_ID), all_rehydration)
-summary(rm_mod)
-emmeans::emmeans(rm_mod,  specs = ~ Timepoint) %>%  pairs()
-
 rm_mod <- lme4::lmer(Change ~ Timepoint + (1|Cricket_ID) + (1|Experiment), all_rehydration, REML = FALSE)
 library(lmerTest)
 summary(rm_mod)

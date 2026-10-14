@@ -44,11 +44,6 @@ Calculate body water content from dry mass:
 
   * Total water content (%): All fluid in body
   * Relative water loss (%): Body fluid lost during desiccation. Relative to total water content 
-  
-Calculate water loss rates:
-
-  * Mass change rate (%/h): Percentage rate change during desiccation based on wet mass 
-  * Water loss rate; WLR (%/h): Rate of relative water loss during desiccation 
 
 
 ```{r}
@@ -61,7 +56,10 @@ metadata <- metadata %>%
   mutate(Percent_change = ifelse(Time == 0, NA, 100 - (End_mass / Start_mass) * 100),
          Percent_change_recovery = ifelse(Time == 24, (Rehydrated_mass / Start_mass) * 100, NA)) %>% 
   # Water content
-  mutate(Total_water_content = ((Start_mass - Dry_mass_mg) / Start_mass) * 100,
+  mutate(
+    Body_water = Start_mass - Dry_mass_mg,
+    Lost_water = Start_mass - End_mass,
+    Total_water_content = ((Start_mass - Dry_mass_mg) / Start_mass) * 100,
          Relative_water_loss = (Percent_change / Total_water_content) * 100) %>% 
   # Water loss rates %/h
   mutate(Mass_change_rate = ifelse(Time == 0, NA, Percent_change / Desiccation_time),
@@ -380,7 +378,6 @@ p_pc_rate <- ggplot() +
 p_pc_rate
 ```
 
-Mass loss rates do not change for females. Decreases in males.
 
 # Proportional water loss
 
@@ -459,7 +456,7 @@ p_WLR <- ggplot() +
 p_WLR
 ```
 
-Patterns are the same as wet mass water loss rates. 
+
 
 # Rehydration
 
@@ -477,19 +474,6 @@ rehydration_volume <- metadata %>%
   mutate(Experiment = "Volume",
          Time_treatment = "24_starved",
          Timepoint = factor(Timepoint, levels = c("Start_Percent", "Percent_change", "Percent_change_recovery"))) 
-
-summary(rehydration_volume[rehydration_volume$Timepoint == "Percent_change_recovery",]$Change)
-
-ggplot(rehydration_volume, aes(Timepoint, Change, group = Cricket_ID)) +
-  geom_hline(yintercept = 100, linetype = 2) +
-  geom_line(linewidth = 1, alpha = 0.6) +
-  theme(legend.position = "right") +
-  ylab("Relative mass change (%)") +
-  scale_y_continuous(breaks = seq(0, 120, 5), limits = c(70, 105), expand = c(0, 0)) +
-  scale_x_discrete(name = "Time point", labels = c("Pre-desiccation", "Post-desiccation", "Post-recovery")) +
-  facet_grid(~Sex) +  
-  theme(legend.position = "right",
-        axis.text.x = element_text(angle = 45, hjust = 1))
 
 save(samples, rehydration_volume, file = "data/Desiccation 2025/volume.Rdata")
 ```
